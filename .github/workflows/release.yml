@@ -45,6 +45,12 @@ jobs:
       - name: Verify Gatekeeper acceptance
         run: |
           DMG="$(find dist -name 'CmdSpace-*.dmg' -print -quit)"
+          APP_BINARY=".build/CmdSpace.app/Contents/MacOS/CmdSpace"
+          otool -L "$APP_BINARY" | grep '/usr/lib/libsqlite3.dylib'
+          if otool -L "$APP_BINARY" | grep -E '/opt/homebrew|/usr/local'; then
+            echo "Release contains a local package-manager dependency"
+            exit 1
+          fi
           xcrun stapler validate "$DMG"
           spctl --assess --type open --context context:primary-signature \
             --verbose=2 "$DMG"

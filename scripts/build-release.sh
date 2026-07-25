@@ -44,6 +44,9 @@ xcrun stapler staple "$dmg_path"
 xcrun stapler validate "$dmg_path"
 spctl --assess --type open --context context:primary-signature \
     --verbose=2 "$dmg_path"
-shasum -a 256 "$dmg_path" > "$dmg_path.sha256"
+(
+    cd "$(dirname "$dmg_path")"
+    shasum -a 256 "$(basename "$dmg_path")" > "$(basename "$dmg_path").sha256"
+)
 
 echo "$dmg_path"

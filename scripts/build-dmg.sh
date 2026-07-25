@@ -67,5 +67,8 @@ if [[ -n "$identity" && "$identity" != "-" ]]; then
     codesign --verify --verbose=2 "$output_dmg"
 fi
 
-shasum -a 256 "$output_dmg" > "$output_dmg.sha256"
+(
+    cd "$(dirname "$output_dmg")"
+    shasum -a 256 "$(basename "$output_dmg")" > "$(basename "$output_dmg").sha256"
+)
 echo "$output_dmg"

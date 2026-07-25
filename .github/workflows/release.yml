@@ -54,7 +54,10 @@ jobs:
           xcrun stapler validate "$DMG"
           spctl --assess --type open --context context:primary-signature \
             --verbose=2 "$DMG"
-          shasum -a 256 -c "$DMG.sha256"
+          (
+            cd "$(dirname "$DMG")"
+            shasum -a 256 -c "$(basename "$DMG").sha256"
+          )
 
       - name: Publish GitHub release
         env:

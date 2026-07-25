@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: swift test
+
+      - name: Import signing certificate
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASS="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S "apple-tool:,apple:" \
+            -s -k "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security default-keychain -s "$KEYCHAIN"
+
+      - name: Build signed and notarized DMG
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+        run: ./scripts/build-release.sh
+
+      - name: Verify Gatekeeper acceptance
+        run: |
+          DMG="$(find dist -name 'CmdSpace-*.dmg' -print -quit)"
+          xcrun stapler validate "$DMG"
+          spctl --assess --type open --context context:primary-signature \
+            --verbose=2 "$DMG"
+          shasum -a 256 -c "$DMG.sha256"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DMG="$(find dist -name 'CmdSpace-*.dmg' -print -quit)"
+          gh release create "$GITHUB_REF_NAME" \
+            "$DMG" \
+            "$DMG.sha256" \
+            --title "CmdSpace ${GITHUB_REF_NAME}" \
+            --generate-notes

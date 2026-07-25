@@ -104,6 +104,8 @@ Public distribution also requires Apple notarization. Store credentials in a
 notarytool keychain profile, then run
 
 ```sh
-CODESIGN_TIMESTAMP=1 ./scripts/build-dmg.sh
-./scripts/notarize-dmg.sh YOUR_KEYCHAIN_PROFILE
+./scripts/build-release.sh YOUR_KEYCHAIN_PROFILE
 ```
+
+This signs with hardened runtime and trusted timestamps, notarizes and staples
+the app, builds the DMG, then notarizes and staples the DMG.

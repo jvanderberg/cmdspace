@@ -21,7 +21,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$repo_dir/scripts/build-app.sh" release
+if [[ "${SKIP_APP_BUILD:-0}" != "1" ]]; then
+    "$repo_dir/scripts/build-app.sh" release
+fi
 mkdir -p "$output_dir"
 mkdir -p "$staging_dir" "$mount_dir"
 ditto "$repo_dir/.build/CmdSpace.app" "$staging_dir/CmdSpace.app"

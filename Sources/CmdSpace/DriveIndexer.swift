@@ -1,3 +1,4 @@
+import CoreServices
 import Darwin
 import Foundation
 
@@ -7,9 +8,34 @@ actor DriveIndexer {
     private static let dataVolume = "/System/Volumes/Data"
     private let database: SearchDatabase
     private var running = false
+    private var monitor: FileSystemMonitor?
+    private var monitoringProgress: ProgressHandler?
 
     init(database: SearchDatabase) {
         self.database = database
+    }
+
+    func startMonitoring(progress: @escaping ProgressHandler) async {
+        monitoringProgress = progress
+        if monitor == nil {
+            let lastEventID = try? await database.lastFileSystemEventID()
+            monitor = FileSystemMonitor(
+                sinceWhen: lastEventID ?? FSEventStreamEventId(
+                    kFSEventStreamEventIdSinceNow
+                )
+            ) { [weak self] changes in
+                Task {
+                    await self?.applyIncrementalChanges(changes)
+                }
+            }
+        }
+        monitor?.start()
+    }
+
+    func stopMonitoring() {
+        monitor?.stop()
+        monitor = nil
+        monitoringProgress = nil
     }
 
     /// Index the sealed system volume and writable Data volume separately.
@@ -19,7 +45,14 @@ actor DriveIndexer {
     func refresh(progress: @escaping ProgressHandler) async {
         guard !running else { return }
         running = true
-        defer { running = false }
+        let shouldRestartMonitoring = monitor != nil
+        monitor?.stop()
+        defer {
+            running = false
+            if shouldRestartMonitoring {
+                monitor?.start()
+            }
+        }
 
         let generation = Int64(Date().timeIntervalSince1970 * 1_000)
         var itemCount = 0
@@ -170,6 +203,195 @@ actor DriveIndexer {
                 skippedCount: skippedCount,
                 message: "Index failed — \(error.localizedDescription)"
             ))
+        }
+    }
+
+    private func applyIncrementalChanges(_ changes: [FileSystemChange]) async {
+        guard !running, !changes.isEmpty else { return }
+        let rescanFlags = FSEventStreamEventFlags(
+            kFSEventStreamEventFlagMustScanSubDirs
+                | kFSEventStreamEventFlagUserDropped
+                | kFSEventStreamEventFlagKernelDropped
+                | kFSEventStreamEventFlagRootChanged
+        )
+        if changes.contains(where: { $0.flags & rescanFlags != 0 }) {
+            await refresh(progress: monitoringProgress ?? { _ in })
+            if let latestEventID = changes.map(\.eventID).max() {
+                try? await database.setLastFileSystemEventID(latestEventID)
+            }
+            return
+        }
+
+        do {
+            let latestEventID = changes.map(\.eventID).max()
+            let generation = try await database.currentGeneration()
+            var removedPaths = Set<String>()
+            var upsertsByPath: [String: IndexedItem] = [:]
+
+            for change in changes {
+                guard let path = incrementalRoot(for: change.path),
+                      path != "/",
+                      !shouldIgnoreIncrementalPath(path) else {
+                    continue
+                }
+
+                if FileManager.default.fileExists(atPath: path) {
+                    let includeDescendants = change.flags
+                        & FSEventStreamEventFlags(
+                            kFSEventStreamEventFlagItemCreated
+                                | kFSEventStreamEventFlagItemRenamed
+                        ) != 0
+                    for item in incrementalItems(
+                        at: path,
+                        includeDescendants: includeDescendants
+                    ) {
+                        upsertsByPath[item.path] = item
+                    }
+                } else {
+                    removedPaths.insert(canonicalPath(for: path))
+                }
+            }
+
+            try await database.remove(paths: Array(removedPaths))
+            try await database.upsert(Array(upsertsByPath.values), generation: generation)
+            if let latestEventID {
+                try await database.setLastFileSystemEventID(latestEventID)
+            }
+
+            guard !removedPaths.isEmpty || !upsertsByPath.isEmpty else { return }
+            let count = try await database.indexedItemCount()
+            monitoringProgress?(IndexProgress(
+                phase: .complete,
+                itemCount: count,
+                skippedCount: 0,
+                message: "Ready · \(count.formatted()) items"
+            ))
+        } catch {
+            monitoringProgress?(IndexProgress(
+                phase: .failed,
+                itemCount: 0,
+                skippedCount: 0,
+                message: "Live update failed — \(error.localizedDescription)"
+            ))
+        }
+    }
+
+    private func incrementalRoot(for rawPath: String) -> String? {
+        var path = rawPath
+        if path.hasPrefix(Self.dataVolume + "/") {
+            path = String(path.dropFirst(Self.dataVolume.count))
+        }
+        let components = URL(fileURLWithPath: path).pathComponents
+        var current = ""
+        for component in components {
+            if component == "/" {
+                current = "/"
+                continue
+            }
+            current = (current as NSString).appendingPathComponent(component)
+            if isKnownPackage(component) {
+                return current
+            }
+        }
+        return path
+    }
+
+    private func incrementalItems(
+        at path: String,
+        includeDescendants: Bool
+    ) -> [IndexedItem] {
+        let url = URL(fileURLWithPath: path)
+        guard let rootItem = indexedItem(for: url) else { return [] }
+        var items = [rootItem]
+        guard includeDescendants,
+              rootItem.kind == .folder,
+              !isKnownPackage(url.lastPathComponent) else {
+            return items
+        }
+
+        let keys: [URLResourceKey] = [
+            .isDirectoryKey,
+            .isSymbolicLinkKey,
+            .contentModificationDateKey,
+            .fileSizeKey
+        ]
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: keys,
+            options: [],
+            errorHandler: { _, _ in true }
+        ) else {
+            return items
+        }
+
+        while let child = enumerator.nextObject() as? URL {
+            if shouldIgnoreIncrementalPath(child.path) {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard let item = indexedItem(for: child) else { continue }
+            items.append(item)
+            if item.kind == .application || isKnownPackage(child.lastPathComponent) {
+                enumerator.skipDescendants()
+            }
+        }
+        return items
+    }
+
+    private func indexedItem(for url: URL) -> IndexedItem? {
+        guard let values = try? url.resourceValues(forKeys: [
+            .isDirectoryKey,
+            .isSymbolicLinkKey,
+            .contentModificationDateKey,
+            .fileSizeKey
+        ]) else {
+            return nil
+        }
+        let name = url.lastPathComponent
+        guard !name.isEmpty else { return nil }
+        let isApplication = values.isDirectory == true
+            && name.lowercased().hasSuffix(".app")
+        let displayName = isApplication ? String(name.dropLast(4)) : name
+        return IndexedItem(
+            path: canonicalPath(for: url.path),
+            name: displayName,
+            normalizedName: SearchDatabase.normalize(displayName),
+            kind: isApplication ? .application : values.isDirectory == true ? .folder : .file,
+            bundleIdentifier: isApplication ? Bundle(url: url)?.bundleIdentifier : nil,
+            modifiedAt: values.contentModificationDate?.timeIntervalSince1970,
+            fileSize: values.isDirectory == true ? nil : values.fileSize.map(Int64.init)
+        )
+    }
+
+    private func shouldIgnoreIncrementalPath(_ path: String) -> Bool {
+        let canonical = canonicalPath(for: path)
+        if canonical == "/Volumes" || canonical.hasPrefix("/Volumes/")
+            || canonical == "/home" || canonical.hasPrefix("/home/")
+            || canonical == "/net" || canonical.hasPrefix("/net/") {
+            return true
+        }
+
+        let components = URL(fileURLWithPath: canonical).pathComponents
+        let noisyNames: Set<String> = [
+            ".git", ".svn", ".hg", ".Trash", "node_modules",
+            "__pycache__", "DerivedData", ".build"
+        ]
+        if components.contains(where: {
+            noisyNames.contains($0) || ($0.hasPrefix(".") && $0 != "." && $0 != "..")
+        }) {
+            return true
+        }
+
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let ignoredRoots = [
+            "\(home)/Library/Caches",
+            "\(home)/Library/Logs",
+            "\(home)/Library/Containers",
+            "\(home)/Library/Group Containers",
+            "\(home)/Library/Application Support/CmdSpace"
+        ]
+        return ignoredRoots.contains {
+            canonical == $0 || canonical.hasPrefix($0 + "/")
         }
     }
 

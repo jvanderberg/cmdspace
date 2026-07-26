@@ -73,6 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     await refreshIndex()
                 }
+                await indexer.startMonitoring { [weak self] progress in
+                    Task { @MainActor [weak self] in
+                        self?.launcher?.update(progress: progress)
+                    }
+                }
             }
 
             scheduleRefreshTimer()

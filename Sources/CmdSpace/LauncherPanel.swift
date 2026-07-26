@@ -1,4 +1,5 @@
 import AppKit
+import QuickLookUI
 
 private enum LauncherMode: Int {
     case search
@@ -11,7 +12,9 @@ private enum LauncherMode: Int {
 final class LauncherPanelController: NSWindowController,
     NSTextFieldDelegate,
     NSTableViewDataSource,
-    NSTableViewDelegate
+    NSTableViewDelegate,
+    NSMenuDelegate,
+    @preconcurrency QLPreviewPanelDataSource
 {
     private let database: SearchDatabase
     private let searchFieldBackdrop = NSSearchField()
@@ -24,7 +27,7 @@ final class LauncherPanelController: NSWindowController,
         target: nil,
         action: nil
     )
-    private let tableView = NSTableView()
+    private let tableView = ResultsTableView()
     private let scrollView = NSScrollView()
     private let statusLabel = NSTextField(labelWithString: "Preparing index…")
     private var results: [SearchResult] = []
@@ -33,6 +36,9 @@ final class LauncherPanelController: NSWindowController,
     private var settingsController: SettingsWindowController?
     private var helpController: HelpWindowController?
     private var mode: LauncherMode = .search
+    private var hasNavigatedResults = false
+    private var previewResult: SearchResult?
+    private var actionTarget: SearchResult?
 
     var onRefreshRequested: (() -> Void)?
     var onPreferencesChanged: (() -> Void)?
@@ -66,8 +72,17 @@ final class LauncherPanelController: NSWindowController,
                 self.hide()
                 return nil
             }
-            if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if event.keyCode == 49, modifiers.isEmpty, self.hasNavigatedResults {
+                self.toggleQuickLook()
+                return nil
+            }
+            if modifiers == .command,
                let key = event.charactersIgnoringModifiers {
+                if key.lowercased() == "k" {
+                    self.showActionsMenu()
+                    return nil
+                }
                 let shortcutModes: [String: LauncherMode] = [
                     "1": .search, "2": .large, "3": .recent, "4": .web
                 ]
@@ -101,6 +116,7 @@ final class LauncherPanelController: NSWindowController,
 
     func show() {
         guard let window else { return }
+        hasNavigatedResults = false
         window.appearance = nil
         window.contentView?.needsDisplay = true
         window.invalidateShadow()
@@ -119,6 +135,7 @@ final class LauncherPanelController: NSWindowController,
     }
 
     func hide() {
+        closeQuickLook()
         window?.orderOut(nil)
     }
 
@@ -130,6 +147,8 @@ final class LauncherPanelController: NSWindowController,
     }
 
     func controlTextDidChange(_ obj: Notification) {
+        hasNavigatedResults = false
+        closeQuickLook()
         updateClearButtonVisibility()
         performSearch()
     }
@@ -176,7 +195,30 @@ final class LauncherPanelController: NSWindowController,
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        // Selection is opened by Return or double click.
+        guard let panel = QLPreviewPanel.shared(),
+              panel.isVisible,
+              panel.dataSource === self,
+              let result = selectedFileResult else {
+            return
+        }
+        previewResult = result
+        panel.reloadData()
+    }
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+        previewResult == nil ? 0 : 1
+    }
+
+    func previewPanel(
+        _ panel: QLPreviewPanel!,
+        previewItemAt index: Int
+    ) -> (any QLPreviewItem)! {
+        guard index == 0, let previewResult else { return nil }
+        return URL(fileURLWithPath: previewResult.path) as NSURL
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        buildActionsMenu(menu)
     }
 
     @objc private func doubleClick() {
@@ -275,6 +317,9 @@ final class LauncherPanelController: NSWindowController,
         tableView.delegate = self
         tableView.target = self
         tableView.doubleAction = #selector(doubleClick)
+        let actionsMenu = NSMenu()
+        actionsMenu.delegate = self
+        tableView.menu = actionsMenu
 
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
@@ -284,7 +329,9 @@ final class LauncherPanelController: NSWindowController,
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.lineBreakMode = .byTruncatingTail
 
-        let hint = NSTextField(labelWithString: "↑↓ Select   ↩ Open   esc Close")
+        let hint = NSTextField(
+            labelWithString: "↑↓ Select   space Preview   ⌘K Actions   ↩ Open"
+        )
         hint.textColor = .tertiaryLabelColor
         hint.font = .systemFont(ofSize: 11)
         hint.alignment = .right
@@ -370,7 +417,9 @@ final class LauncherPanelController: NSWindowController,
                     query: query,
                     preferApplications: Preferences.preferApplicationsInSearch
                 )) ?? []
-                if BuiltInSearchCommands.matchesHelp(query) {
+                if let calculation = Calculator.evaluate(query) {
+                    localMatches.insert(Self.calculatorSearchResult(calculation), at: 0)
+                } else if BuiltInSearchCommands.matchesHelp(query) {
                     localMatches.insert(Self.helpSearchResult(), at: 0)
                 }
                 matches = localMatches
@@ -426,8 +475,22 @@ final class LauncherPanelController: NSWindowController,
         )
     }
 
+    private static func calculatorSearchResult(_ calculation: CalculatorResult) -> SearchResult {
+        SearchResult(
+            path: calculation.value,
+            name: calculation.value,
+            kind: .calculator,
+            launchCount: 0,
+            lastLaunched: nil,
+            modifiedAt: nil,
+            fileSize: nil,
+            score: .greatestFiniteMagnitude
+        )
+    }
+
     @objc private func clearSearch() {
         searchField.stringValue = ""
+        hasNavigatedResults = false
         updateClearButtonVisibility()
         window?.makeFirstResponder(searchField)
         performSearch()
@@ -442,6 +505,8 @@ final class LauncherPanelController: NSWindowController,
     }
 
     private func setMode(_ newMode: LauncherMode) {
+        hasNavigatedResults = false
+        closeQuickLook()
         mode = newMode
         modeControl.selectedSegment = newMode.rawValue
         switch newMode {
@@ -490,10 +555,248 @@ final class LauncherPanelController: NSWindowController,
 
     private func selectRow(offset: Int) {
         guard !results.isEmpty else { return }
+        hasNavigatedResults = true
         let current = tableView.selectedRow < 0 ? 0 : tableView.selectedRow
         let next = min(max(current + offset, 0), results.count - 1)
         tableView.selectRowIndexes(IndexSet(integer: next), byExtendingSelection: false)
         tableView.scrollRowToVisible(next)
+    }
+
+    private var selectedFileResult: SearchResult? {
+        let row = tableView.selectedRow
+        guard results.indices.contains(row) else { return nil }
+        let result = results[row]
+        guard [.file, .folder, .application].contains(result.kind),
+              FileManager.default.fileExists(atPath: result.path) else {
+            return nil
+        }
+        return result
+    }
+
+    private func toggleQuickLook() {
+        guard let result = selectedFileResult,
+              let panel = QLPreviewPanel.shared() else {
+            NSSound.beep()
+            return
+        }
+        if panel.isVisible, panel.dataSource === self {
+            closeQuickLook()
+            window?.makeKeyAndOrderFront(nil)
+            window?.makeFirstResponder(searchField)
+            return
+        }
+        showQuickLook(for: result)
+    }
+
+    private func showQuickLook(for result: SearchResult) {
+        guard let panel = QLPreviewPanel.shared() else { return }
+        previewResult = result
+        panel.dataSource = self
+        panel.reloadData()
+        panel.currentPreviewItemIndex = 0
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    private func closeQuickLook() {
+        guard let panel = QLPreviewPanel.shared(),
+              panel.dataSource === self else {
+            previewResult = nil
+            return
+        }
+        panel.orderOut(nil)
+        panel.dataSource = nil
+        previewResult = nil
+    }
+
+    private func showActionsMenu() {
+        guard selectedFileResult != nil else {
+            NSSound.beep()
+            return
+        }
+        let row = tableView.selectedRow
+        let rowRect = tableView.rect(ofRow: row)
+        tableView.menu?.popUp(
+            positioning: nil,
+            at: NSPoint(x: rowRect.minX + 54, y: rowRect.midY),
+            in: tableView
+        )
+    }
+
+    private func buildActionsMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let clickedRow = tableView.clickedRow
+        if results.indices.contains(clickedRow) {
+            tableView.selectRowIndexes(
+                IndexSet(integer: clickedRow),
+                byExtendingSelection: false
+            )
+        }
+        guard let result = selectedFileResult else { return }
+        actionTarget = result
+
+        addMenuItem("Open", action: #selector(openActionTarget), to: menu)
+        addMenuItem("Quick Look", action: #selector(quickLookActionTarget), to: menu)
+        addMenuItem("Reveal in Finder", action: #selector(revealActionTarget), to: menu)
+        addMenuItem("Copy Path", action: #selector(copyPathActionTarget), to: menu)
+
+        var isDirectory = ObjCBool(false)
+        let targetIsDirectory = FileManager.default.fileExists(
+            atPath: result.path,
+            isDirectory: &isDirectory
+        ) && isDirectory.boolValue && result.kind != .application
+        if targetIsDirectory {
+            addMenuItem(
+                "Terminal from Here",
+                action: #selector(openTerminalAtActionTarget),
+                to: menu
+            )
+        } else if result.kind == .file {
+            let fileURL = URL(fileURLWithPath: result.path)
+            let applications = NSWorkspace.shared.urlsForApplications(toOpen: fileURL)
+                .sorted {
+                    $0.deletingPathExtension().lastPathComponent
+                        .localizedStandardCompare(
+                            $1.deletingPathExtension().lastPathComponent
+                        ) == .orderedAscending
+                }
+            if !applications.isEmpty {
+                let openWithItem = NSMenuItem(title: "Open With", action: nil, keyEquivalent: "")
+                let submenu = NSMenu()
+                for applicationURL in applications.prefix(20) {
+                    let item = NSMenuItem(
+                        title: applicationURL.deletingPathExtension().lastPathComponent,
+                        action: #selector(openActionTargetWithApplication(_:)),
+                        keyEquivalent: ""
+                    )
+                    item.target = self
+                    item.representedObject = applicationURL as NSURL
+                    item.image = NSWorkspace.shared.icon(forFile: applicationURL.path)
+                    item.image?.size = NSSize(width: 16, height: 16)
+                    submenu.addItem(item)
+                }
+                openWithItem.submenu = submenu
+                menu.addItem(openWithItem)
+            }
+        }
+
+        menu.addItem(.separator())
+        addMenuItem("Move to Trash…", action: #selector(trashActionTarget), to: menu)
+    }
+
+    private func addMenuItem(_ title: String, action: Selector, to menu: NSMenu) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
+    }
+
+    @objc private func openActionTarget() {
+        guard let actionTarget else { return }
+        openFileResult(actionTarget)
+    }
+
+    @objc private func quickLookActionTarget() {
+        guard let actionTarget else { return }
+        showQuickLook(for: actionTarget)
+    }
+
+    @objc private func revealActionTarget() {
+        guard let actionTarget else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([
+            URL(fileURLWithPath: actionTarget.path)
+        ])
+        hide()
+    }
+
+    @objc private func copyPathActionTarget() {
+        guard let actionTarget else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(actionTarget.path, forType: .string)
+    }
+
+    @objc private func openTerminalAtActionTarget() {
+        guard let actionTarget else { return }
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(
+                atPath: actionTarget.path,
+                isDirectory: &isDirectory
+              ),
+              isDirectory.boolValue,
+              actionTarget.kind != .application,
+              let terminalURL = NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: "com.apple.Terminal"
+              ) else {
+            return
+        }
+        NSWorkspace.shared.open(
+            [URL(fileURLWithPath: actionTarget.path)],
+            withApplicationAt: terminalURL,
+            configuration: NSWorkspace.OpenConfiguration()
+        )
+        hide()
+    }
+
+    @objc private func openActionTargetWithApplication(_ sender: NSMenuItem) {
+        guard let actionTarget,
+              let applicationURL = sender.representedObject as? URL else {
+            return
+        }
+        let fileURL = URL(fileURLWithPath: actionTarget.path)
+        NSWorkspace.shared.open(
+            [fileURL],
+            withApplicationAt: applicationURL,
+            configuration: NSWorkspace.OpenConfiguration()
+        )
+        hide()
+        Task { [database] in
+            try? await database.recordLaunch(path: actionTarget.path)
+        }
+    }
+
+    @objc private func trashActionTarget() {
+        guard let actionTarget else { return }
+        let alert = NSAlert()
+        alert.messageText = "Move “\(actionTarget.name)” to Trash?"
+        alert.informativeText = "You can restore it from Trash."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let path = actionTarget.path
+        NSWorkspace.shared.recycle([URL(fileURLWithPath: path)]) {
+            [weak self, database] _, error in
+            guard error == nil else {
+                Task { @MainActor [weak self] in
+                    self?.showFileActionError(error)
+                }
+                return
+            }
+            Task {
+                try? await database.remove(paths: [path])
+                await MainActor.run {
+                    self?.performSearch()
+                }
+            }
+        }
+    }
+
+    private func showFileActionError(_ error: Error?) {
+        let alert = NSAlert()
+        alert.messageText = "The item could not be moved to Trash"
+        alert.informativeText = error?.localizedDescription ?? "The operation did not complete."
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+
+    private func openFileResult(_ result: SearchResult) {
+        NSWorkspace.shared.open(URL(fileURLWithPath: result.path))
+        Task { [database] in
+            try? await database.recordLaunch(path: result.path)
+        }
+        hide()
+        searchField.stringValue = ""
+        updateClearButtonVisibility()
     }
 
     private func openSelection() {
@@ -524,17 +827,31 @@ final class LauncherPanelController: NSWindowController,
             updateClearButtonVisibility()
             return
         }
+        if selectedResult?.kind == .calculator {
+            guard let value = selectedResult?.path else { return }
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(value, forType: .string)
+            hide()
+            searchField.stringValue = ""
+            updateClearButtonVisibility()
+            return
+        }
         let row = tableView.selectedRow
         guard results.indices.contains(row) else { return }
         let result = results[row]
-        let url = URL(fileURLWithPath: result.path)
-        NSWorkspace.shared.open(url)
-        Task { [database] in
-            try? await database.recordLaunch(path: result.path)
+        openFileResult(result)
+    }
+}
+
+private final class ResultsTableView: NSTableView {
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = row(at: point)
+        if row >= 0 {
+            selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         }
-        hide()
-        searchField.stringValue = ""
-        updateClearButtonVisibility()
+        return super.menu(for: event)
     }
 }
 
@@ -597,14 +914,23 @@ private final class ResultCellView: NSTableCellView {
         pathLabel.stringValue = result.path
         switch mode {
         case .search:
-            if result.kind == .help {
+            if result.kind == .calculator {
+                iconView.image = NSImage(
+                    systemSymbolName: "function",
+                    accessibilityDescription: "Calculator"
+                )
+                pathLabel.stringValue = "Press Return to copy"
+                kindLabel.stringValue = "Copy"
+            } else if result.kind == .help {
                 iconView.image = NSImage(
                     systemSymbolName: "questionmark.circle.fill",
                     accessibilityDescription: "CmdSpace Help"
                 )
                 pathLabel.stringValue = "Open the CmdSpace guide"
+                kindLabel.stringValue = result.kind.label
+            } else {
+                kindLabel.stringValue = result.kind.label
             }
-            kindLabel.stringValue = result.kind.label
         case .large:
             kindLabel.stringValue = result.fileSize.map {
                 ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)

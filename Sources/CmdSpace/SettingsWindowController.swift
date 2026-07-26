@@ -4,7 +4,7 @@ import ServiceManagement
 @MainActor
 final class SettingsWindowController: NSWindowController {
     private static let refreshIntervals: [TimeInterval] = [
-        15 * 60, 30 * 60, 60 * 60, 2 * 60 * 60, 0
+        6 * 60 * 60, 12 * 60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60, 0
     ]
 
     var onRefreshRequested: (() -> Void)?
@@ -32,7 +32,7 @@ final class SettingsWindowController: NSWindowController {
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 510, height: 500),
+            contentRect: NSRect(x: 0, y: 0, width: 510, height: 540),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -72,16 +72,21 @@ final class SettingsWindowController: NSWindowController {
         let title = NSTextField(labelWithString: "Indexing")
         title.font = .systemFont(ofSize: 15, weight: .semibold)
 
-        let refreshLabel = NSTextField(labelWithString: "Refresh automatically")
+        let refreshLabel = NSTextField(labelWithString: "Reconcile full index")
         refreshPopup.addItems(withTitles: [
-            "Every 15 minutes",
-            "Every 30 minutes",
-            "Every hour",
-            "Every 2 hours",
+            "Every 6 hours",
+            "Every 12 hours",
+            "Daily",
+            "Weekly",
             "Manual only"
         ])
         refreshPopup.target = self
         refreshPopup.action = #selector(refreshIntervalChanged)
+        let refreshDescription = NSTextField(wrappingLabelWithString:
+            "File changes are indexed live. Full reconciliation catches changes made while CmdSpace was not running."
+        )
+        refreshDescription.textColor = .secondaryLabelColor
+        refreshDescription.font = .systemFont(ofSize: 11)
 
         let browseTitle = NSTextField(labelWithString: "Browse")
         browseTitle.font = .systemFont(ofSize: 15, weight: .semibold)
@@ -147,6 +152,7 @@ final class SettingsWindowController: NSWindowController {
             topRow,
             title,
             refreshRow,
+            refreshDescription,
             separator(),
             browseTitle,
             preferUserDirectoriesCheckbox,
@@ -171,6 +177,7 @@ final class SettingsWindowController: NSWindowController {
         content.addSubview(stack)
 
         refreshRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        refreshDescription.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         topRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         browseDescription.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         webDescription.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
@@ -191,7 +198,7 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func refreshControls() {
-        let selected = Self.refreshIntervals.firstIndex(of: Preferences.refreshInterval) ?? 3
+        let selected = Self.refreshIntervals.firstIndex(of: Preferences.refreshInterval) ?? 2
         refreshPopup.selectItem(at: selected)
         preferUserDirectoriesCheckbox.state = Preferences.preferUserDirectoriesInRecent
             ? .on

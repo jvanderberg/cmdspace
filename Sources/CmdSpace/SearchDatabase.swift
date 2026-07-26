@@ -149,6 +149,62 @@ actor SearchDatabase {
         // after a complete scan.
     }
 
+    func currentGeneration() throws -> Int64 {
+        let statement = try prepare(
+            "SELECT value FROM metadata WHERE key = 'active_generation'"
+        )
+        defer { sqlite3_finalize(statement) }
+        if sqlite3_step(statement) == SQLITE_ROW,
+           let value = sqlite3_column_text(statement, 0),
+           let generation = Int64(String(cString: value)) {
+            return generation
+        }
+        let generation = Int64(Date().timeIntervalSince1970 * 1_000)
+        try setMetadata(key: "active_generation", value: String(generation))
+        return generation
+    }
+
+    func lastFileSystemEventID() throws -> UInt64? {
+        let statement = try prepare(
+            "SELECT value FROM metadata WHERE key = 'last_filesystem_event_id'"
+        )
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let value = sqlite3_column_text(statement, 0) else {
+            return nil
+        }
+        return UInt64(String(cString: value))
+    }
+
+    func setLastFileSystemEventID(_ eventID: UInt64) throws {
+        try setMetadata(key: "last_filesystem_event_id", value: String(eventID))
+    }
+
+    func remove(paths: [String]) throws {
+        guard !paths.isEmpty else { return }
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let statement = try prepare("""
+                DELETE FROM items
+                WHERE path = ? OR path LIKE ? ESCAPE '\\'
+                """)
+            defer { sqlite3_finalize(statement) }
+            for path in paths {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                bind(path, at: 1, to: statement)
+                bind("\(escapeLike(path))/%", at: 2, to: statement)
+                guard sqlite3_step(statement) == SQLITE_DONE else {
+                    throw lastError()
+                }
+            }
+            try execute("COMMIT")
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
+    }
+
     func search(
         query rawQuery: String,
         includeFilesAndFolders: Bool = true,

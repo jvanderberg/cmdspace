@@ -194,4 +194,63 @@ final class SearchDatabaseTests: XCTestCase {
         )
         XCTAssertEqual(chronological.map(\.name), ["newer.txt", "mine.txt"])
     }
+
+    func testIncrementalUpsertAndSubtreeRemoval() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let database = try SearchDatabase(url: directory.appendingPathComponent("test.sqlite3"))
+        try await database.beginIndex(generation: 42)
+        try await database.upsert([
+            IndexedItem(
+                path: "/Users/me/Documents/project",
+                name: "project",
+                normalizedName: "project",
+                kind: .folder,
+                bundleIdentifier: nil,
+                modifiedAt: 100,
+                fileSize: nil
+            ),
+            IndexedItem(
+                path: "/Users/me/Documents/project/notes.txt",
+                name: "notes.txt",
+                normalizedName: "notes.txt",
+                kind: .file,
+                bundleIdentifier: nil,
+                modifiedAt: 100,
+                fileSize: 10
+            )
+        ], generation: 42)
+        try await database.finishIndex(generation: 42)
+
+        let generation = try await database.currentGeneration()
+        XCTAssertEqual(generation, 42)
+        let initialEventID = try await database.lastFileSystemEventID()
+        XCTAssertNil(initialEventID)
+        try await database.setLastFileSystemEventID(123_456)
+        let eventID = try await database.lastFileSystemEventID()
+        XCTAssertEqual(eventID, 123_456)
+        try await database.upsert([
+            IndexedItem(
+                path: "/Users/me/Documents/new.txt",
+                name: "new.txt",
+                normalizedName: "new.txt",
+                kind: .file,
+                bundleIdentifier: nil,
+                modifiedAt: 200,
+                fileSize: 20
+            )
+        ], generation: generation)
+        let inserted = try await database.search(query: "new")
+        XCTAssertEqual(inserted.first?.name, "new.txt")
+
+        try await database.remove(paths: ["/Users/me/Documents/project"])
+        let removedFolder = try await database.search(query: "project")
+        let removedChild = try await database.search(query: "notes")
+        let retained = try await database.search(query: "new")
+        XCTAssertTrue(removedFolder.isEmpty)
+        XCTAssertTrue(removedChild.isEmpty)
+        XCTAssertEqual(retained.first?.name, "new.txt")
+    }
 }

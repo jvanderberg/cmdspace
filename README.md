@@ -10,7 +10,7 @@
 
 CmdSpace is a small native macOS launcher intended to replace Spotlight on
 <kbd>⌘</kbd><kbd>Space</kbd>. It builds its own filename index of the startup
-drive, refreshes that index every two hours, and learns from items opened
+drive, follows filesystem changes as they happen, and learns from items opened
 through CmdSpace.
 
 ## Install
@@ -26,11 +26,15 @@ Existing results remain searchable while later refreshes run.
 
 - Indexes application names, file names, and folder names (not file contents).
 - Opens from a fast keyboard-first floating launcher.
+- Previews selected files with Quick Look after navigating with the arrow keys.
+- Provides contextual actions for revealing, copying paths, choosing an app,
+  and moving items to Trash.
 - Browses largest files and most recently modified files via the mode switch
   or ⌘1/⌘2/⌘3, and searches the web with ⌘4.
 - Ranks exact and prefix matches first, then boosts items by launch frequency
   and recency.
 - Keeps apps first by default, with a setting to use normal relevance instead.
+- Calculates expressions and converts common units directly in Search.
 - Shows live web results and opens full searches with your chosen provider.
 - Stores the index and launch history locally in
   `~/Library/Application Support/CmdSpace/index.sqlite3`.

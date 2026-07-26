@@ -50,7 +50,8 @@ final class HelpWindowController: NSWindowController {
             views: [
                 bodyLabel(
                     "Press ⌘Space anywhere, start typing, choose a result with ↑ or ↓, "
-                    + "then press Return. Press Escape to close without opening anything."
+                    + "then press Return. Press Space after choosing a file to preview it. "
+                    + "Press Escape to close without opening anything."
                 ),
                 makeShortcutStrip()
             ]
@@ -64,6 +65,19 @@ final class HelpWindowController: NSWindowController {
                     title: "Search",
                     shortcut: "⌘1",
                     detail: "Applications, filenames, and folders. Ranking learns from what you launch."
+                ),
+                divider(),
+                titledDetail(
+                    "Calculator and conversions",
+                    "Type expressions such as 18% of 240, sqrt(144), or 12 km to miles. "
+                    + "Press Return to copy the answer."
+                ),
+                divider(),
+                titledDetail(
+                    "File actions",
+                    "After choosing a file, press ⌘K or right-click for Quick Look, "
+                    + "Reveal in Finder, Copy Path, Open With, and Move to Trash. "
+                    + "Folders can also open a Terminal window from their location."
                 ),
                 divider(),
                 modeRow(
@@ -102,8 +116,8 @@ final class HelpWindowController: NSWindowController {
                 titledDetail(
                     "Index",
                     "CmdSpace indexes names, paths, modification dates, and file sizes—not "
-                    + "document contents. It refreshes every two hours by default, or only "
-                    + "on demand if you choose Manual."
+                    + "document contents. Filesystem changes update the index automatically. "
+                    + "Scheduled refreshes reconcile the full index in the background."
                 )
             ]
         )

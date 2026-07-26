@@ -56,6 +56,37 @@ final class HelpWindowController: NSWindowController {
                 makeShortcutStrip()
             ]
         )
+        let whatsNew = makeCard(
+            title: "New in 0.1.2",
+            symbol: "sparkles.rectangle.stack",
+            views: [
+                titledDetail(
+                    "Live indexing",
+                    "File changes update results while CmdSpace runs. Changes made while "
+                    + "CmdSpace was closed replay after relaunch. Full reconciliation now "
+                    + "defaults to Manual only, remains available on optional schedules, "
+                    + "and runs automatically if macOS reports an event-history gap."
+                ),
+                divider(),
+                titledDetail(
+                    "Quick Look and file actions",
+                    "After choosing a result with the arrow keys, press Space for Quick Look. "
+                    + "Press ⌘K or right-click for Open, Quick Look, Reveal in Finder, "
+                    + "Copy Path, Open With, and Move to Trash. Folders also offer "
+                    + "Terminal from Here. Items moved to Trash remain recoverable."
+                ),
+                divider(),
+                titledDetail(
+                    "Calculator, conversions, and dates",
+                    "Search now handles arithmetic, percentages, factorials, functions, "
+                    + "constants, complex numbers, and natural-language operators. "
+                    + "Conversions cover length, area, volume, mass, temperature, speed, "
+                    + "time, storage, angle, energy, power, pressure, and frequency. "
+                    + "English date phrases support relative dates, differences, weekdays, "
+                    + "and Monday-through-Friday business days."
+                )
+            ]
+        )
         let modes = makeCard(
             title: "Search Modes",
             symbol: "square.grid.2x2",
@@ -120,8 +151,10 @@ final class HelpWindowController: NSWindowController {
                 titledDetail(
                     "Index",
                     "CmdSpace indexes names, paths, modification dates, and file sizes—not "
-                    + "document contents. Filesystem changes update the index automatically. "
-                    + "Full reconciliation is available manually or on an optional schedule."
+                    + "document contents. Filesystem changes update the index automatically "
+                    + "and changes made while CmdSpace was closed replay after relaunch. "
+                    + "Full reconciliation defaults to Manual only and is also available "
+                    + "on optional schedules."
                 )
             ]
         )
@@ -158,7 +191,7 @@ final class HelpWindowController: NSWindowController {
             ]
         )
 
-        [header, quickStart, modes, ranking, setup].forEach {
+        [header, quickStart, whatsNew, modes, ranking, setup].forEach {
             content.addArrangedSubview($0)
             $0.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         }

@@ -257,15 +257,6 @@ actor DriveIndexer {
             if let latestEventID {
                 try await database.setLastFileSystemEventID(latestEventID)
             }
-
-            guard !removedPaths.isEmpty || !upsertsByPath.isEmpty else { return }
-            let count = try await database.indexedItemCount()
-            monitoringProgress?(IndexProgress(
-                phase: .complete,
-                itemCount: count,
-                skippedCount: 0,
-                message: "Ready · \(count.formatted()) items"
-            ))
         } catch {
             monitoringProgress?(IndexProgress(
                 phase: .failed,

@@ -25,6 +25,8 @@ Existing results remain searchable while later refreshes run.
 ## What it does
 
 - Indexes application names, file names, and folder names (not file contents).
+- Tracks filesystem changes live and replays changes made while CmdSpace was
+  not running.
 - Opens from a fast keyboard-first floating launcher.
 - Previews selected files with Quick Look after navigating with the arrow keys.
 - Provides contextual actions for revealing, copying paths, choosing an app,
@@ -34,7 +36,8 @@ Existing results remain searchable while later refreshes run.
 - Ranks exact and prefix matches first, then boosts items by launch frequency
   and recency.
 - Keeps apps first by default, with a setting to use normal relevance instead.
-- Calculates expressions and converts common units directly in Search.
+- Calculates expressions, converts common units, and handles English date
+  phrases such as `30 days from today` directly in Search.
 - Shows live web results and opens full searches with your chosen provider.
 - Stores the index and launch history locally in
   `~/Library/Application Support/CmdSpace/index.sqlite3`.
@@ -47,6 +50,10 @@ then maps Data-volume paths back to their familiar `/Users` and `/Applications`
 spellings. It skips caches, cloud-provider roots, automount triggers, container
 data, VCS internals, dependency trees, temporary volumes, and other high-noise
 locations. It does not use or modify Spotlight's index.
+
+Live filesystem updates keep the index current. Full reconciliation is
+available manually or on an optional schedule and runs automatically when
+macOS reports an event-history gap.
 
 ## Build and run
 

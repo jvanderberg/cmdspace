@@ -83,7 +83,8 @@ final class SettingsWindowController: NSWindowController {
         refreshPopup.target = self
         refreshPopup.action = #selector(refreshIntervalChanged)
         let refreshDescription = NSTextField(wrappingLabelWithString:
-            "File changes are indexed live. Full reconciliation catches changes made while CmdSpace was not running."
+            "File changes are indexed live and replayed after CmdSpace relaunches. "
+            + "Full reconciliation is an optional safety check."
         )
         refreshDescription.textColor = .secondaryLabelColor
         refreshDescription.font = .systemFont(ofSize: 11)
@@ -198,7 +199,7 @@ final class SettingsWindowController: NSWindowController {
     }
 
     private func refreshControls() {
-        let selected = Self.refreshIntervals.firstIndex(of: Preferences.refreshInterval) ?? 2
+        let selected = Self.refreshIntervals.firstIndex(of: Preferences.refreshInterval) ?? 4
         refreshPopup.selectItem(at: selected)
         preferUserDirectoriesCheckbox.state = Preferences.preferUserDirectoriesInRecent
             ? .on

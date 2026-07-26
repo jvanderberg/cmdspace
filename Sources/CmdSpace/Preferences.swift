@@ -37,11 +37,11 @@ enum Preferences {
     static var refreshInterval: TimeInterval {
         get {
             guard UserDefaults.standard.object(forKey: refreshIntervalKey) != nil else {
-                return 24 * 60 * 60
+                return 0
             }
             let stored = UserDefaults.standard.double(forKey: refreshIntervalKey)
             if stored > 0, stored < 6 * 60 * 60 {
-                return 24 * 60 * 60
+                return 0
             }
             return stored
         }

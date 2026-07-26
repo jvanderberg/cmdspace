@@ -6,8 +6,23 @@ struct CalculatorResult: Equatable, Sendable {
 }
 
 enum Calculator {
-    static func evaluate(_ rawQuery: String) -> CalculatorResult? {
+    static func evaluate(
+        _ rawQuery: String,
+        now: Date = Date(),
+        calendar: Calendar = .current,
+        locale: Locale = .current
+    ) -> CalculatorResult? {
         let prepared = prepare(rawQuery)
+
+        if let dateCalculation = DateMath.evaluate(
+            prepared.expression,
+            now: now,
+            calendar: calendar,
+            locale: locale
+        ) {
+            return dateCalculation
+        }
+
         guard prepared.isExplicit || looksLikeMath(prepared.expression) else { return nil }
 
         if let conversion = UnitConverter.convert(prepared.expression) {
@@ -716,7 +731,12 @@ private enum UnitConverter {
         UnitDefinition(.volume, "mL", 0.001, ["ml", "milliliter", "milliliters", "millilitre", "millilitres"]),
         UnitDefinition(.volume, "L", 1, ["l", "liter", "liters", "litre", "litres"]),
         UnitDefinition(.volume, "m³", 1_000, ["m3", "m³", "cubic meter", "cubic meters"]),
-        UnitDefinition(.volume, "fl oz", 0.0295735295625, ["fl oz", "fluid ounce", "fluid ounces"]),
+        UnitDefinition(
+            .volume,
+            "fl oz",
+            0.0295735295625,
+            ["fl oz", "fluid ounce", "fluid ounces", "oz", "ounce", "ounces"]
+        ),
         UnitDefinition(.volume, "cup", 0.2365882365, ["cup", "cups"]),
         UnitDefinition(.volume, "pt", 0.473176473, ["pt", "pint", "pints"]),
         UnitDefinition(.volume, "qt", 0.946352946, ["qt", "quart", "quarts"]),
@@ -809,23 +829,26 @@ private enum UnitConverter {
     }
 
     static func convert(_ expression: String) -> CalculatorResult? {
-        guard let (sourceText, targetText) = conversionParts(expression),
-              let target = unit(matching: targetText) else {
+        guard let (sourceText, targetText) = conversionParts(expression) else {
             return nil
         }
 
-        let sourceValue: Double
-        let source: UnitDefinition
+        let sources: [(value: Double, unit: UnitDefinition)]
         if let feetAndInches = parseFeetAndInches(sourceText) {
-            sourceValue = feetAndInches
-            source = unit(matching: "m")!
+            sources = [(feetAndInches, unit(matching: "m")!)]
         } else {
-            guard let parsed = parseSource(sourceText) else { return nil }
-            sourceValue = parsed.value
-            source = parsed.unit
+            sources = parseSources(sourceText)
         }
 
-        guard source.dimension == target.dimension else { return nil }
+        let targets = units(matching: targetText)
+        guard let pair = sources.lazy.compactMap({ source in
+            targets.first(where: { $0.dimension == source.unit.dimension }).map {
+                (source.value, source.unit, $0)
+            }
+        }).first else {
+            return nil
+        }
+        let (sourceValue, source, target) = pair
         let baseValue = source.toBase?(sourceValue) ?? sourceValue * source.factor
         let converted = target.fromBase?(baseValue) ?? baseValue / target.factor
         guard converted.isFinite else { return nil }
@@ -844,15 +867,18 @@ private enum UnitConverter {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let right = String(expression[range.upperBound...])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !left.isEmpty, !right.isEmpty, unit(matching: right) != nil {
+            if !left.isEmpty, !right.isEmpty, !units(matching: right).isEmpty {
                 return (left, right)
             }
         }
         return nil
     }
 
-    private static func parseSource(_ text: String) -> (value: Double, unit: UnitDefinition)? {
+    private static func parseSources(
+        _ text: String
+    ) -> [(value: Double, unit: UnitDefinition)] {
         let normalized = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        var results: [(value: Double, unit: UnitDefinition)] = []
         for candidate in allAliasesByLength {
             guard normalized.hasSuffix(candidate.alias) else { continue }
             let boundary = normalized.index(normalized.endIndex, offsetBy: -candidate.alias.count)
@@ -862,9 +888,9 @@ private enum UnitConverter {
                   let value = Calculator.arithmeticValue(expression) else {
                 continue
             }
-            return (value, candidate.unit)
+            results.append((value, candidate.unit))
         }
-        return nil
+        return results
     }
 
     private static func parseFeetAndInches(_ text: String) -> Double? {
@@ -887,8 +913,14 @@ private enum UnitConverter {
     }
 
     private static func unit(matching text: String) -> UnitDefinition? {
+        units(matching: text).first
+    }
+
+    private static func units(matching text: String) -> [UnitDefinition] {
         let normalized = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        return allAliasesByLength.first(where: { $0.alias == normalized })?.unit
+        return allAliasesByLength
+            .filter { $0.alias == normalized }
+            .map(\.unit)
     }
 
     private static let allAliasesByLength: [(alias: String, unit: UnitDefinition)] = {

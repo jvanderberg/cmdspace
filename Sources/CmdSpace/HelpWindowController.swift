@@ -68,8 +68,12 @@ final class HelpWindowController: NSWindowController {
                 ),
                 divider(),
                 titledDetail(
-                    "Calculator and conversions",
+                    "Calculator, dates, and conversions",
                     "Type expressions such as 18% of 240, sqrt(144), or 12 km to miles. "
+                    + "Try 30 days from today, days until Christmas, or "
+                    + "business days between August 1 and September 15. "
+                    + "Business days count Monday through Friday without holidays. "
+                    + "Date phrases currently use English input. "
                     + "Press Return to copy the answer."
                 ),
                 divider(),
@@ -117,7 +121,7 @@ final class HelpWindowController: NSWindowController {
                     "Index",
                     "CmdSpace indexes names, paths, modification dates, and file sizes—not "
                     + "document contents. Filesystem changes update the index automatically. "
-                    + "Scheduled refreshes reconcile the full index in the background."
+                    + "Full reconciliation is available manually or on an optional schedule."
                 )
             ]
         )

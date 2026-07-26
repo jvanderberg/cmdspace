@@ -2,6 +2,30 @@ import XCTest
 @testable import CmdSpace
 
 final class CalculatorTests: XCTestCase {
+    private var dateMathCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    private var dateMathReferenceDate: Date {
+        dateMathCalendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 25,
+            hour: 12
+        ))!
+    }
+
+    private func dateMath(_ query: String) -> CalculatorResult? {
+        Calculator.evaluate(
+            query,
+            now: dateMathReferenceDate,
+            calendar: dateMathCalendar,
+            locale: Locale(identifier: "en_US")
+        )
+    }
+
     func testOperatorPrecedenceAndParentheses() {
         XCTAssertEqual(Calculator.evaluate("2 + 3 * 4")?.value, "14")
         XCTAssertEqual(Calculator.evaluate("(2 + 3) * 4")?.value, "20")
@@ -69,6 +93,18 @@ final class CalculatorTests: XCTestCase {
         XCTAssertEqual(Calculator.evaluate("-40 °C to °F")?.value, "-40 °F")
     }
 
+    func testOuncesUseTheTargetDimension() {
+        XCTAssertEqual(
+            Calculator.evaluate("20 ounces in milliliters")?.value,
+            "591.47059125 mL"
+        )
+        XCTAssertEqual(Calculator.evaluate("20 ounces in grams")?.value, "566.9904625 g")
+        XCTAssertEqual(
+            Calculator.evaluate("500 milliliters in ounces")?.value,
+            "16.9070113509 fl oz"
+        )
+    }
+
     func testSpeedTimeAndStorageConversions() {
         XCTAssertEqual(Calculator.evaluate("60 mph to kmh")?.value, "96.56064 km/h")
         XCTAssertEqual(Calculator.evaluate("3 days to hours")?.value, "72 h")
@@ -88,5 +124,48 @@ final class CalculatorTests: XCTestCase {
         XCTAssertEqual(Calculator.evaluate("1 horsepower to kw")?.value, "0.745699871582 kW")
         XCTAssertEqual(Calculator.evaluate("1 atm to psi")?.value, "14.6959487755 psi")
         XCTAssertEqual(Calculator.evaluate("2.4 ghz to mhz")?.value, "2400 MHz")
+    }
+
+    func testRelativeDateMath() {
+        XCTAssertEqual(dateMath("10 days from today")?.value, "August 4, 2026")
+        XCTAssertEqual(dateMath("30 days from today")?.value, "August 24, 2026")
+        XCTAssertEqual(dateMath("3 days before today")?.value, "July 22, 2026")
+        XCTAssertEqual(dateMath("July 25 + 6 weeks")?.value, "September 5, 2026")
+        XCTAssertEqual(dateMath("what date is 2 months from today?")?.value, "September 25, 2026")
+    }
+
+    func testDateDifferences() {
+        XCTAssertEqual(dateMath("days until Christmas")?.value, "153 days")
+        XCTAssertEqual(
+            dateMath("days between August 1 and September 15")?.value,
+            "45 days"
+        )
+        XCTAssertEqual(
+            dateMath("days between December 31 and January 2")?.value,
+            "2 days"
+        )
+    }
+
+    func testBusinessDayMath() {
+        XCTAssertEqual(
+            dateMath("10 business days from today")?.value,
+            "August 7, 2026"
+        )
+        XCTAssertEqual(
+            dateMath("business days between August 1 and September 15")?.value,
+            "32 business days"
+        )
+    }
+
+    func testNamedRelativeDates() {
+        XCTAssertEqual(dateMath("tomorrow")?.value, "July 26, 2026")
+        XCTAssertEqual(dateMath("next Friday")?.value, "July 31, 2026")
+    }
+
+    func testDateMathDoesNotHijackFilenameQueries() {
+        XCTAssertNil(dateMath("July 25"))
+        XCTAssertNil(dateMath("report July 25"))
+        XCTAssertNil(dateMath("Christmas photos"))
+        XCTAssertNil(dateMath("days until"))
     }
 }

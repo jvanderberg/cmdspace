@@ -51,6 +51,29 @@ struct SearchResult: Sendable, Equatable {
     let modifiedAt: Date?
     let fileSize: Int64?
     let score: Double
+    let detail: String?
+
+    init(
+        path: String,
+        name: String,
+        kind: ItemKind,
+        launchCount: Int,
+        lastLaunched: Date?,
+        modifiedAt: Date?,
+        fileSize: Int64?,
+        score: Double,
+        detail: String? = nil
+    ) {
+        self.path = path
+        self.name = name
+        self.kind = kind
+        self.launchCount = launchCount
+        self.lastLaunched = lastLaunched
+        self.modifiedAt = modifiedAt
+        self.fileSize = fileSize
+        self.score = score
+        self.detail = detail
+    }
 }
 
 struct IndexProgress: Sendable {

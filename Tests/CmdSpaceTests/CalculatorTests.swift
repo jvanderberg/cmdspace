@@ -36,7 +36,9 @@ final class CalculatorTests: XCTestCase {
 
     func testNaturalOperatorsPercentAndFactorial() {
         XCTAssertEqual(Calculator.evaluate("18 percent of 240")?.value, "43.2")
+        XCTAssertEqual(Calculator.evaluate("18% of 12")?.value, "2.16")
         XCTAssertEqual(Calculator.evaluate("20 divided by 4 plus 3")?.value, "8")
+        XCTAssertEqual(Calculator.evaluate("12* 15")?.value, "180")
         XCTAssertEqual(Calculator.evaluate("6!")?.value, "720")
     }
 
@@ -80,35 +82,130 @@ final class CalculatorTests: XCTestCase {
     }
 
     func testLengthAreaAndCompoundHeightConversions() {
-        XCTAssertEqual(Calculator.evaluate("12 km to miles")?.value, "7.45645430685 mi")
-        XCTAssertEqual(Calculator.evaluate("10 square feet to m2")?.value, "0.9290304 m²")
+        XCTAssertEqual(Calculator.evaluate("12 km to miles")?.value, "7.45645 mi")
+        XCTAssertEqual(Calculator.evaluate("10 square feet to m2")?.value, "0.92903 m²")
         XCTAssertEqual(Calculator.evaluate("5 ft 10 in to cm")?.value, "177.8 cm")
     }
 
     func testTemperatureMassAndVolumeConversions() {
-        XCTAssertEqual(Calculator.evaluate("72 f in c")?.value, "22.2222222222 °C")
+        XCTAssertEqual(Calculator.evaluate("72 f in c")?.value, "22.2222 °C")
         XCTAssertEqual(Calculator.evaluate("0 c to f")?.value, "32 °F")
-        XCTAssertEqual(Calculator.evaluate("10 lb to kg")?.value, "4.5359237 kg")
-        XCTAssertEqual(Calculator.evaluate("2 gallons to liters")?.value, "7.570823568 L")
+        XCTAssertEqual(Calculator.evaluate("10 lb to kg")?.value, "4.53592 kg")
+        XCTAssertEqual(Calculator.evaluate("15 kg to pounds")?.value, "33.0693 lb")
+        XCTAssertEqual(Calculator.evaluate("2 gallons to liters")?.value, "7.57082 L")
         XCTAssertEqual(Calculator.evaluate("-40 °C to °F")?.value, "-40 °F")
+    }
+
+    func testCommonUnitConversionSuggestions() {
+        XCTAssertEqual(
+            Calculator.queryCompletion(for: "20F"),
+            QueryCompletion(
+                suffix: " in Celsius",
+                completedQuery: "20F in Celsius"
+            )
+        )
+        XCTAssertEqual(
+            Calculator.queryCompletion(for: "15kg"),
+            QueryCompletion(
+                suffix: " in pounds",
+                completedQuery: "15kg in pounds"
+            )
+        )
+        XCTAssertEqual(
+            Calculator.queryCompletion(for: "60mph"),
+            QueryCompletion(
+                suffix: " in kilometers per hour",
+                completedQuery: "60mph in kmh"
+            )
+        )
+        XCTAssertEqual(
+            Calculator.evaluate(
+                Calculator.queryCompletion(for: "20F")!.completedQuery
+            )?.value,
+            "-6.66667 °C"
+        )
+        XCTAssertNil(Calculator.queryCompletion(for: "20F in Celsius"))
+        XCTAssertNil(Calculator.queryCompletion(for: "report20F"))
+    }
+
+    func testSubmillisecondConversionsAndSuggestions() {
+        XCTAssertEqual(Calculator.evaluate("1 ms to us")?.value, "1000 µs")
+        XCTAssertEqual(Calculator.evaluate("1 us to ns")?.value, "1000 ns")
+        XCTAssertEqual(Calculator.evaluate("1000 ns to us")?.value, "1 µs")
+        XCTAssertEqual(
+            Calculator.queryCompletion(for: "250ms"),
+            QueryCompletion(
+                suffix: " in seconds",
+                completedQuery: "250ms in seconds"
+            )
+        )
+        XCTAssertEqual(
+            Calculator.queryCompletion(for: "500us"),
+            QueryCompletion(
+                suffix: " in milliseconds",
+                completedQuery: "500us in milliseconds"
+            )
+        )
+    }
+
+    func testProgrammerLiteralConversions() {
+        XCTAssertEqual(
+            Calculator.evaluate("0xF2Ea"),
+            CalculatorResult(
+                value: "62186",
+                detail: "BIN 0b1111001011101010   ·   OCT 0o171352   ·   DEC 62186   ·   HEX 0xF2EA",
+                displayValue: "62186 decimal"
+            )
+        )
+        XCTAssertEqual(
+            Calculator.evaluate("0b010101010 in hex"),
+            CalculatorResult(
+                value: "0xAA",
+                detail: "BIN 0b10101010   ·   OCT 0o252   ·   DEC 170   ·   HEX 0xAA",
+                displayValue: "0xAA hexadecimal"
+            )
+        )
+        XCTAssertEqual(Calculator.evaluate("0xF2Ea in binary")?.value, "0b1111001011101010")
+        XCTAssertEqual(Calculator.evaluate("0o17 as decimal")?.value, "15")
+        XCTAssertEqual(
+            Calculator.queryCompletion(for: "0b010101010"),
+            QueryCompletion(
+                suffix: " in hexadecimal",
+                completedQuery: "0b010101010 in hexadecimal"
+            )
+        )
+        XCTAssertEqual(
+            Calculator.queryCompletion(for: "0xF2Ea"),
+            QueryCompletion(
+                suffix: " in decimal",
+                completedQuery: "0xF2Ea in decimal"
+            )
+        )
+        XCTAssertEqual(Calculator.evaluate("0b1111")?.value, "15")
+        XCTAssertEqual(Calculator.evaluate("0o17")?.value, "15")
+        XCTAssertEqual(Calculator.evaluate("1111b")?.value, "15")
+        XCTAssertEqual(Calculator.evaluate("0xFFFF_FFFF")?.value, "4294967295")
+        XCTAssertNil(Calculator.evaluate("0x"))
+        XCTAssertNil(Calculator.evaluate("0b102"))
+        XCTAssertNil(Calculator.evaluate("1010"))
     }
 
     func testOuncesUseTheTargetDimension() {
         XCTAssertEqual(
             Calculator.evaluate("20 ounces in milliliters")?.value,
-            "591.47059125 mL"
+            "591.471 mL"
         )
-        XCTAssertEqual(Calculator.evaluate("20 ounces in grams")?.value, "566.9904625 g")
+        XCTAssertEqual(Calculator.evaluate("20 ounces in grams")?.value, "566.99 g")
         XCTAssertEqual(
             Calculator.evaluate("500 milliliters in ounces")?.value,
-            "16.9070113509 fl oz"
+            "16.907 fl oz"
         )
     }
 
     func testSpeedTimeAndStorageConversions() {
-        XCTAssertEqual(Calculator.evaluate("60 mph to kmh")?.value, "96.56064 km/h")
+        XCTAssertEqual(Calculator.evaluate("60 mph to kmh")?.value, "96.5606 km/h")
         XCTAssertEqual(Calculator.evaluate("3 days to hours")?.value, "72 h")
-        XCTAssertEqual(Calculator.evaluate("2 GiB to MB")?.value, "2147.483648 MB")
+        XCTAssertEqual(Calculator.evaluate("2 GiB to MB")?.value, "2147.48 MB")
         XCTAssertEqual(Calculator.evaluate("3 * 4 km to m")?.value, "12000 m")
     }
 
@@ -119,10 +216,10 @@ final class CalculatorTests: XCTestCase {
     }
 
     func testScientificUnitFamilies() {
-        XCTAssertEqual(Calculator.evaluate("180 degrees to radians")?.value, "3.14159265359 rad")
+        XCTAssertEqual(Calculator.evaluate("180 degrees to radians")?.value, "3.14159 rad")
         XCTAssertEqual(Calculator.evaluate("1 kwh to joules")?.value, "3600000 J")
-        XCTAssertEqual(Calculator.evaluate("1 horsepower to kw")?.value, "0.745699871582 kW")
-        XCTAssertEqual(Calculator.evaluate("1 atm to psi")?.value, "14.6959487755 psi")
+        XCTAssertEqual(Calculator.evaluate("1 horsepower to kw")?.value, "0.7457 kW")
+        XCTAssertEqual(Calculator.evaluate("1 atm to psi")?.value, "14.6959 psi")
         XCTAssertEqual(Calculator.evaluate("2.4 ghz to mhz")?.value, "2400 MHz")
     }
 

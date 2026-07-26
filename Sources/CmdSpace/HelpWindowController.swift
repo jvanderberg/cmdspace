@@ -56,14 +56,14 @@ final class HelpWindowController: NSWindowController {
                 makeShortcutStrip()
             ]
         )
-        let whatsNew = makeCard(
-            title: "New in 0.1.2",
+        let majorFeatures = makeCard(
+            title: "Major Features",
             symbol: "sparkles.rectangle.stack",
             views: [
                 titledDetail(
                     "Live indexing",
                     "File changes update results while CmdSpace runs. Changes made while "
-                    + "CmdSpace was closed replay after relaunch. Full reconciliation now "
+                    + "CmdSpace was closed replay after relaunch. Full reconciliation "
                     + "defaults to Manual only, remains available on optional schedules, "
                     + "and runs automatically if macOS reports an event-history gap."
                 ),
@@ -78,10 +78,15 @@ final class HelpWindowController: NSWindowController {
                 divider(),
                 titledDetail(
                     "Calculator, conversions, and dates",
-                    "Search now handles arithmetic, percentages, factorials, functions, "
+                    "Search handles arithmetic, percentages, factorials, functions, "
                     + "constants, complex numbers, and natural-language operators. "
                     + "Conversions cover length, area, volume, mass, temperature, speed, "
                     + "time, storage, angle, energy, power, pressure, and frequency. "
+                    + "Milliseconds, microseconds, and nanoseconds are supported. "
+                    + "Common unit pairs complete inline and Tab accepts the suggestion. "
+                    + "Programmer literals using 0b, 0o, or 0x show binary, octal, "
+                    + "decimal, and hexadecimal forms. Type-ahead suggests a target, "
+                    + "and queries such as 0b1010 in hex choose what Return copies. "
                     + "English date phrases support relative dates, differences, weekdays, "
                     + "and Monday-through-Friday business days."
                 )
@@ -101,6 +106,10 @@ final class HelpWindowController: NSWindowController {
                 titledDetail(
                     "Calculator, dates, and conversions",
                     "Type expressions such as 18% of 240, sqrt(144), or 12 km to miles. "
+                    + "Try 20F for an inline Celsius conversion or 0xF2Ea for "
+                    + "binary, octal, decimal, and hexadecimal forms. "
+                    + "Append in binary, in octal, in decimal, or in hex to choose "
+                    + "the copied result. "
                     + "Try 30 days from today, days until Christmas, or "
                     + "business days between August 1 and September 15. "
                     + "Business days count Monday through Friday without holidays. "
@@ -119,14 +128,16 @@ final class HelpWindowController: NSWindowController {
                     symbol: "internaldrive.fill",
                     title: "Large Files",
                     shortcut: "⌘2",
-                    detail: "Indexed files sorted largest-first. Type to filter by filename."
+                    detail: "Browse up to 1,000 indexed files sorted largest-first. "
+                        + "Type to filter by filename."
                 ),
                 divider(),
                 modeRow(
                     symbol: "clock",
                     title: "Recent Files",
                     shortcut: "⌘3",
-                    detail: "Recently modified files, with an option to prioritize common personal folders."
+                    detail: "Scroll through up to 1,000 recently modified files, with an "
+                        + "option to prioritize common personal folders."
                 ),
                 divider(),
                 modeRow(
@@ -191,7 +202,7 @@ final class HelpWindowController: NSWindowController {
             ]
         )
 
-        [header, quickStart, whatsNew, modes, ranking, setup].forEach {
+        [header, quickStart, majorFeatures, modes, ranking, setup].forEach {
             content.addArrangedSubview($0)
             $0.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         }
@@ -215,34 +226,58 @@ final class HelpWindowController: NSWindowController {
     }
 
     private func makeHeader() -> NSView {
+        let banner = NSVisualEffectView()
+        banner.material = .headerView
+        banner.blendingMode = .withinWindow
+        banner.state = .active
+        banner.wantsLayer = true
+        banner.layer?.cornerRadius = 16
+        banner.layer?.masksToBounds = true
+
         let icon = NSImageView()
-        icon.image = NSImage(
-            systemSymbolName: "command.square.fill",
-            accessibilityDescription: "CmdSpace"
-        )
-        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 44, weight: .medium)
-        icon.contentTintColor = .controlAccentColor
+        icon.image = NSApp.applicationIconImage
+        icon.setAccessibilityLabel("CmdSpace")
         icon.imageScaling = .scaleProportionallyUpOrDown
-        icon.widthAnchor.constraint(equalToConstant: 54).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 54).isActive = true
+        icon.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 64).isActive = true
 
         let title = NSTextField(labelWithString: "CmdSpace")
         title.font = .systemFont(ofSize: 28, weight: .bold)
         let subtitle = NSTextField(labelWithString: "Find what you need. Launch it fast.")
         subtitle.font = .systemFont(ofSize: 14)
         subtitle.textColor = .secondaryLabelColor
+        let version = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "Development"
+        let build = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String
+        let versionText = build.map {
+            "Version \(version) · Build \($0)"
+        } ?? "Version \(version)"
+        let versionLabel = NSTextField(labelWithString: versionText)
+        versionLabel.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+        versionLabel.textColor = .tertiaryLabelColor
 
-        let copy = NSStackView(views: [title, subtitle])
+        let copy = NSStackView(views: [title, subtitle, versionLabel])
         copy.orientation = .vertical
         copy.alignment = .leading
-        copy.spacing = 2
+        copy.spacing = 3
 
         let header = NSStackView(views: [icon, copy])
         header.orientation = .horizontal
         header.alignment = .centerY
-        header.spacing = 14
-        header.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 4, right: 4)
-        return header
+        header.spacing = 16
+        header.translatesAutoresizingMaskIntoConstraints = false
+        banner.addSubview(header)
+
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: banner.topAnchor, constant: 18),
+            header.leadingAnchor.constraint(equalTo: banner.leadingAnchor, constant: 20),
+            header.trailingAnchor.constraint(equalTo: banner.trailingAnchor, constant: -20),
+            header.bottomAnchor.constraint(equalTo: banner.bottomAnchor, constant: -18)
+        ])
+        return banner
     }
 
     private func makeCard(title: String, symbol: String, views: [NSView]) -> NSView {

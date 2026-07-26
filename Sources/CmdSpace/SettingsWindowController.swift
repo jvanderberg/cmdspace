@@ -28,16 +28,25 @@ final class SettingsWindowController: NSWindowController {
         action: nil
     )
     private let webSearchPopup = NSPopUpButton()
+    private let popupOpacitySlider = NSSlider(
+        value: Preferences.popupOpacity,
+        minValue: 0,
+        maxValue: 1,
+        target: nil,
+        action: nil
+    )
+    private let popupOpacityValue = NSTextField(labelWithString: "")
     private let diskAccessLabel = NSTextField(labelWithString: "")
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 510, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 500),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         window.title = "CmdSpace Settings"
+        window.level = .floating
         window.isReleasedWhenClosed = false
         super.init(window: window)
         buildUI(in: window)
@@ -64,10 +73,49 @@ final class SettingsWindowController: NSWindowController {
             action: #selector(openHelpWindow)
         )
         openHelp.bezelStyle = .rounded
+        let checkForUpdates = NSButton(
+            title: "Check for Updates…",
+            target: self,
+            action: #selector(checkForUpdates)
+        )
+        checkForUpdates.bezelStyle = .rounded
+
+        let appIcon = NSImageView()
+        appIcon.image = NSApp.applicationIconImage
+        appIcon.setAccessibilityLabel("CmdSpace")
+        appIcon.imageScaling = .scaleProportionallyUpOrDown
+        appIcon.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        appIcon.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
+        let appName = NSTextField(labelWithString: "CmdSpace")
+        appName.font = .systemFont(ofSize: 20, weight: .bold)
+        let version = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "Development"
+        let build = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleVersion"
+        ) as? String
+        let versionText = build.map {
+            "Version \(version) · Build \($0)"
+        } ?? "Version \(version)"
+        let appVersion = NSTextField(labelWithString: versionText)
+        appVersion.font = .monospacedSystemFont(ofSize: 10, weight: .medium)
+        appVersion.textColor = .tertiaryLabelColor
+
+        let identityCopy = NSStackView(views: [appName, appVersion])
+        identityCopy.orientation = .vertical
+        identityCopy.alignment = .leading
+        identityCopy.spacing = 2
+        let identity = NSStackView(views: [appIcon, identityCopy])
+        identity.orientation = .horizontal
+        identity.alignment = .centerY
+        identity.spacing = 10
+
         let topSpacer = NSView()
-        let topRow = NSStackView(views: [topSpacer, openHelp])
+        let topRow = NSStackView(views: [identity, topSpacer, checkForUpdates, openHelp])
         topRow.orientation = .horizontal
         topRow.alignment = .centerY
+        topRow.spacing = 8
 
         let title = NSTextField(labelWithString: "Indexing")
         title.font = .systemFont(ofSize: 15, weight: .semibold)
@@ -117,6 +165,30 @@ final class SettingsWindowController: NSWindowController {
         webDescription.textColor = .secondaryLabelColor
         webDescription.font = .systemFont(ofSize: 11)
 
+        let appearanceTitle = NSTextField(labelWithString: "Appearance")
+        appearanceTitle.font = .systemFont(ofSize: 15, weight: .semibold)
+        let opacityLabel = NSTextField(labelWithString: "Glass tint")
+        popupOpacitySlider.isContinuous = true
+        popupOpacitySlider.target = self
+        popupOpacitySlider.action = #selector(popupOpacityChanged)
+        popupOpacityValue.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        popupOpacityValue.alignment = .right
+        popupOpacityValue.widthAnchor.constraint(equalToConstant: 38).isActive = true
+        let opacityRow = NSStackView(
+            views: [opacityLabel, popupOpacitySlider, popupOpacityValue]
+        )
+        opacityRow.orientation = .horizontal
+        opacityRow.spacing = 10
+        opacityRow.alignment = .centerY
+        opacityLabel.setContentHuggingPriority(.required, for: .horizontal)
+        popupOpacitySlider.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
+        let opacityDescription = NSTextField(
+            wrappingLabelWithString: "Adjust the translucent tint while keeping the native "
+                + "background blur fully active."
+        )
+        opacityDescription.textColor = .secondaryLabelColor
+        opacityDescription.font = .systemFont(ofSize: 11)
+
         let refreshNow = NSButton(
             title: "Refresh Index Now",
             target: self,
@@ -149,45 +221,86 @@ final class SettingsWindowController: NSWindowController {
         refreshLabel.setContentHuggingPriority(.required, for: .horizontal)
         refreshNow.setContentHuggingPriority(.required, for: .horizontal)
 
-        let stack = NSStackView(views: [
-            topRow,
-            title,
-            refreshRow,
-            refreshDescription,
-            separator(),
-            browseTitle,
-            preferUserDirectoriesCheckbox,
-            browseDescription,
-            separator(),
-            webTitle,
-            preferApplicationsCheckbox,
-            webRow,
-            webDescription,
-            separator(),
-            startupTitle,
-            launchAtLoginCheckbox,
-            separator(),
-            permissionsTitle,
-            diskAccessLabel,
-            openDiskAccess
+        let tabView = NSTabView()
+        tabView.addTabViewItem(makeTab(
+            label: "General",
+            views: [
+                appearanceTitle,
+                opacityRow,
+                opacityDescription,
+                separator(),
+                startupTitle,
+                launchAtLoginCheckbox
+            ]
+        ))
+        tabView.addTabViewItem(makeTab(
+            label: "Search and Browse",
+            views: [
+                webTitle,
+                preferApplicationsCheckbox,
+                webRow,
+                webDescription,
+                separator(),
+                browseTitle,
+                preferUserDirectoriesCheckbox,
+                browseDescription
+            ]
+        ))
+        tabView.addTabViewItem(makeTab(
+            label: "Index and Access",
+            views: [
+                title,
+                refreshRow,
+                refreshDescription,
+                separator(),
+                permissionsTitle,
+                diskAccessLabel,
+                openDiskAccess
+            ]
+        ))
+
+        let layout = NSStackView(views: [topRow, tabView])
+        layout.orientation = .vertical
+        layout.alignment = .leading
+        layout.spacing = 16
+        layout.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(layout)
+
+        topRow.widthAnchor.constraint(equalTo: layout.widthAnchor).isActive = true
+        tabView.widthAnchor.constraint(equalTo: layout.widthAnchor).isActive = true
+        NSLayoutConstraint.activate([
+            layout.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+            layout.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 22),
+            layout.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -22),
+            layout.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20)
         ])
+    }
+
+    private func makeTab(label: String, views: [NSView]) -> NSTabViewItem {
+        let container = NSView()
+        let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
+        stack.spacing = 11
         stack.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(stack)
+        container.addSubview(stack)
 
-        refreshRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        refreshDescription.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        topRow.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        browseDescription.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        webDescription.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        diskAccessLabel.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        views.forEach {
+            stack.addArrangedSubview($0)
+            $0.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 22),
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24)
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 18),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 18),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -18),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor, constant: -18)
         ])
+
+        let item = NSTabViewItem()
+        item.label = label
+        item.view = container
+        return item
     }
 
     private func separator() -> NSBox {
@@ -209,6 +322,8 @@ final class SettingsWindowController: NSWindowController {
             at: WebSearchEngine.allCases.firstIndex(of: Preferences.webSearchEngine) ?? 0
         )
         launchAtLoginCheckbox.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        popupOpacitySlider.doubleValue = Preferences.popupOpacity
+        updatePopupOpacityValue()
 
         let hasFullDiskAccess = (try? FileManager.default.contentsOfDirectory(
             atPath: NSHomeDirectory() + "/Library/Safari"
@@ -237,6 +352,18 @@ final class SettingsWindowController: NSWindowController {
     @objc private func webSearchEngineChanged() {
         Preferences.webSearchEngine = WebSearchEngine.allCases[webSearchPopup.indexOfSelectedItem]
         onPreferencesChanged?()
+    }
+
+    @objc private func popupOpacityChanged() {
+        Preferences.popupOpacity = popupOpacitySlider.doubleValue
+        updatePopupOpacityValue()
+        onPreferencesChanged?()
+    }
+
+    private func updatePopupOpacityValue() {
+        popupOpacityValue.stringValue = Preferences.popupOpacity.formatted(
+            .percent.precision(.fractionLength(0))
+        )
     }
 
     @objc private func refreshNow() {
@@ -269,5 +396,12 @@ final class SettingsWindowController: NSWindowController {
     @objc private func openHelpWindow() {
         window?.orderOut(nil)
         onHelpRequested?()
+    }
+
+    @objc private func checkForUpdates() {
+        guard let url = URL(
+            string: "https://github.com/jvanderberg/cmdspace/releases/latest"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 }

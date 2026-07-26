@@ -3,6 +3,18 @@ import Foundation
 struct CalculatorResult: Equatable, Sendable {
     let value: String
     let detail: String
+    let displayValue: String?
+
+    init(value: String, detail: String, displayValue: String? = nil) {
+        self.value = value
+        self.detail = detail
+        self.displayValue = displayValue
+    }
+}
+
+struct QueryCompletion: Equatable, Sendable {
+    let suffix: String
+    let completedQuery: String
 }
 
 enum Calculator {
@@ -21,6 +33,12 @@ enum Calculator {
             locale: locale
         ) {
             return dateCalculation
+        }
+
+        if let programmerConversion = ProgrammerNumberConverter.convert(
+            prepared.expression
+        ) {
+            return programmerConversion
         }
 
         guard prepared.isExplicit || looksLikeMath(prepared.expression) else { return nil }
@@ -50,6 +68,10 @@ enum Calculator {
         return realValue
     }
 
+    static func queryCompletion(for rawQuery: String) -> QueryCompletion? {
+        QueryCompletionEngine.suggestion(for: rawQuery)
+    }
+
     fileprivate static func format(_ value: Double) -> String {
         let normalized = abs(value) < 1e-14 ? 0 : value
         let locale = Locale(identifier: "en_US_POSIX")
@@ -57,6 +79,16 @@ enum Calculator {
             return String(format: "%.0f", locale: locale, normalized)
         }
         return String(format: "%.12g", locale: locale, normalized)
+            .replacingOccurrences(of: "e+", with: "e")
+    }
+
+    fileprivate static func formatMeasurement(_ value: Double) -> String {
+        let normalized = abs(value) < 1e-14 ? 0 : value
+        let locale = Locale(identifier: "en_US_POSIX")
+        if normalized.rounded() == normalized, abs(normalized) < 1e12 {
+            return String(format: "%.0f", locale: locale, normalized)
+        }
+        return String(format: "%.6g", locale: locale, normalized)
             .replacingOccurrences(of: "e+", with: "e")
     }
 
@@ -147,6 +179,139 @@ enum Calculator {
             of: #"\d\s*-\s*\d"#,
             options: .regularExpression
         ) != nil
+    }
+}
+
+private enum QueryCompletionEngine {
+    private struct Provider: Sendable {
+        let suggestion: @Sendable (String) -> QueryCompletion?
+    }
+
+    private static let providers: [Provider] = [
+        Provider { UnitConverter.suggestion(for: $0) },
+        Provider { ProgrammerNumberConverter.suggestion(for: $0) }
+    ]
+
+    static func suggestion(for query: String) -> QueryCompletion? {
+        providers.lazy.compactMap { $0.suggestion(query) }.first
+    }
+}
+
+private enum ProgrammerNumberConverter {
+    private enum OutputBase {
+        case binary
+        case octal
+        case decimal
+        case hexadecimal
+
+        init?(_ name: String) {
+            switch name.lowercased() {
+            case "bin", "binary", "base 2", "base2":
+                self = .binary
+            case "oct", "octal", "base 8", "base8":
+                self = .octal
+            case "dec", "decimal", "base 10", "base10":
+                self = .decimal
+            case "hex", "hexadecimal", "base 16", "base16":
+                self = .hexadecimal
+            default:
+                return nil
+            }
+        }
+    }
+
+    static func convert(_ expression: String) -> CalculatorResult? {
+        let trimmed = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed == expression, !trimmed.isEmpty else { return nil }
+
+        var literal = trimmed
+        var outputBase = OutputBase.decimal
+        let lowercaseExpression = trimmed.lowercased()
+        for separator in [" in ", " to ", " as "] {
+            guard let range = lowercaseExpression.range(
+                of: separator,
+                options: .backwards
+            ) else {
+                continue
+            }
+            let targetName = String(trimmed[range.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let target = OutputBase(targetName) else { return nil }
+            literal = String(trimmed[..<range.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            outputBase = target
+            break
+        }
+
+        let lowercase = literal.lowercased()
+        let radix: Int
+        let digits: String
+        if lowercase.hasPrefix("0b") {
+            radix = 2
+            digits = String(literal.dropFirst(2))
+        } else if lowercase.hasPrefix("0o") {
+            radix = 8
+            digits = String(literal.dropFirst(2))
+        } else if lowercase.hasPrefix("0x") {
+            radix = 16
+            digits = String(literal.dropFirst(2))
+        } else if lowercase.hasSuffix("b") {
+            radix = 2
+            digits = String(literal.dropLast())
+        } else {
+            return nil
+        }
+
+        let normalizedDigits = digits.replacingOccurrences(of: "_", with: "")
+        guard !normalizedDigits.isEmpty,
+              let value = UInt64(normalizedDigits, radix: radix) else {
+            return nil
+        }
+
+        let binary = String(value, radix: 2)
+        let octal = String(value, radix: 8)
+        let hexadecimal = String(value, radix: 16).uppercased()
+        let output: String
+        let displayValue: String
+        switch outputBase {
+        case .binary:
+            output = "0b\(binary)"
+            displayValue = "\(output) binary"
+        case .octal:
+            output = "0o\(octal)"
+            displayValue = "\(output) octal"
+        case .decimal:
+            output = String(value)
+            displayValue = "\(output) decimal"
+        case .hexadecimal:
+            output = "0x\(hexadecimal)"
+            displayValue = "\(output) hexadecimal"
+        }
+        return CalculatorResult(
+            value: output,
+            detail: "BIN 0b\(binary)   ·   OCT 0o\(octal)   ·   DEC \(value)   ·   HEX 0x\(hexadecimal)",
+            displayValue: displayValue
+        )
+    }
+
+    static func suggestion(for rawQuery: String) -> QueryCompletion? {
+        let lowercase = rawQuery.lowercased()
+        guard rawQuery == rawQuery.trimmingCharacters(in: .whitespacesAndNewlines),
+              !lowercase.contains(" in "),
+              !lowercase.contains(" to "),
+              !lowercase.contains(" as "),
+              convert(rawQuery) != nil else {
+            return nil
+        }
+
+        let target = lowercase.hasPrefix("0b") || lowercase.hasSuffix("b")
+            ? "hexadecimal"
+            : "decimal"
+        let suffix = " in \(target)"
+        return QueryCompletion(
+            suffix: suffix,
+            completedQuery: rawQuery + suffix
+        )
     }
 }
 
@@ -707,6 +872,71 @@ private struct UnitDefinition {
 }
 
 private enum UnitConverter {
+    private struct CompletionTarget {
+        let displayName: String
+        let queryName: String
+    }
+
+    private static let completionTargets: [String: CompletionTarget] = {
+        func target(_ displayName: String, _ queryName: String? = nil) -> CompletionTarget {
+            CompletionTarget(
+                displayName: displayName,
+                queryName: queryName ?? displayName
+            )
+        }
+
+        var targets: [String: CompletionTarget] = [:]
+        func add(_ aliases: [String], _ completionTarget: CompletionTarget) {
+            aliases.forEach { targets[$0] = completionTarget }
+        }
+
+        add(["f", "°f", "fahrenheit"], target("Celsius"))
+        add(["c", "°c", "celsius"], target("Fahrenheit"))
+        add(["k", "kelvin"], target("Celsius"))
+
+        add(["mi", "mile", "miles"], target("kilometers"))
+        add(["km", "kilometer", "kilometers"], target("miles"))
+        add(["ft", "foot", "feet"], target("meters"))
+        add(["m", "meter", "meters"], target("feet"))
+        add(["in", "inch", "inches"], target("centimeters"))
+        add(["cm", "centimeter", "centimeters"], target("inches"))
+        add(["yd", "yard", "yards"], target("meters"))
+
+        add(["lb", "lbs", "pound", "pounds"], target("kilograms"))
+        add(["kg", "kilogram", "kilograms"], target("pounds"))
+        add(["oz", "ounce", "ounces"], target("grams"))
+        add(["g", "gram", "grams"], target("ounces"))
+
+        add(["gal", "gallon", "gallons"], target("liters"))
+        add(["l", "liter", "liters"], target("gallons"))
+        add(["ml", "milliliter", "milliliters"], target("fluid ounces"))
+        add(["fl oz", "fluid ounce", "fluid ounces"], target("milliliters"))
+        add(["cup", "cups"], target("milliliters"))
+
+        add(["mph", "miles per hour"], target("kilometers per hour", "kmh"))
+        add(
+            ["km/h", "kmh", "kph", "kilometers per hour"],
+            target("miles per hour", "mph")
+        )
+
+        add(["gb", "gigabyte", "gigabytes"], target("GiB", "gib"))
+        add(["gib", "gibibyte", "gibibytes"], target("GB", "gb"))
+        add(["mb", "megabyte", "megabytes"], target("MiB", "mib"))
+        add(["mib", "mebibyte", "mebibytes"], target("MB", "mb"))
+
+        add(["day", "days"], target("hours"))
+        add(["hour", "hours", "hr"], target("minutes"))
+        add(["minute", "minutes", "min"], target("seconds"))
+        add(["s", "sec", "second", "seconds"], target("milliseconds"))
+        add(["ms", "millisecond", "milliseconds"], target("seconds"))
+        add(
+            ["us", "µs", "μs", "microsecond", "microseconds"],
+            target("milliseconds")
+        )
+        add(["ns", "nanosecond", "nanoseconds"], target("microseconds"))
+        return targets
+    }()
+
     private static let units: [UnitDefinition] = [
         UnitDefinition(.length, "mm", 0.001, ["mm", "millimeter", "millimeters", "millimetre", "millimetres"]),
         UnitDefinition(.length, "µm", 0.000001, ["um", "µm", "micrometer", "micrometers", "micrometre", "micrometres"]),
@@ -776,6 +1006,13 @@ private enum UnitConverter {
         UnitDefinition(.speed, "ft/s", 0.3048, ["ft/s", "fps", "feet per second"]),
         UnitDefinition(.speed, "kn", 0.5144444444, ["kn", "knot", "knots"]),
 
+        UnitDefinition(.time, "ns", 0.000000001, ["ns", "nanosecond", "nanoseconds"]),
+        UnitDefinition(
+            .time,
+            "µs",
+            0.000001,
+            ["us", "µs", "μs", "microsecond", "microseconds"]
+        ),
         UnitDefinition(.time, "ms", 0.001, ["ms", "millisecond", "milliseconds"]),
         UnitDefinition(.time, "s", 1, ["s", "sec", "second", "seconds"]),
         UnitDefinition(.time, "min", 60, ["min", "minute", "minutes"]),
@@ -828,6 +1065,35 @@ private enum UnitConverter {
         conversionParts(expression) != nil
     }
 
+    static func suggestion(for rawQuery: String) -> QueryCompletion? {
+        guard rawQuery == rawQuery.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawQuery.isEmpty else {
+            return nil
+        }
+        let pattern = #"^([+-]?(?:\d+(?:\.\d*)?|\.\d+))\s*(.+?)$"#
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern,
+            options: .caseInsensitive
+        ),
+        let match = regex.firstMatch(
+            in: rawQuery,
+            range: NSRange(rawQuery.startIndex..., in: rawQuery)
+        ),
+        let unitRange = Range(match.range(at: 2), in: rawQuery) else {
+            return nil
+        }
+        let sourceUnit = rawQuery[unitRange]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard let target = completionTargets[sourceUnit] else { return nil }
+
+        let suffix = " in \(target.displayName)"
+        return QueryCompletion(
+            suffix: suffix,
+            completedQuery: rawQuery + " in " + target.queryName
+        )
+    }
+
     static func convert(_ expression: String) -> CalculatorResult? {
         guard let (sourceText, targetText) = conversionParts(expression) else {
             return nil
@@ -853,7 +1119,7 @@ private enum UnitConverter {
         let converted = target.fromBase?(baseValue) ?? baseValue / target.factor
         guard converted.isFinite else { return nil }
 
-        let value = "\(Calculator.format(converted)) \(target.symbol)"
+        let value = "\(Calculator.formatMeasurement(converted)) \(target.symbol)"
         return CalculatorResult(value: value, detail: "Press Return to copy")
     }
 

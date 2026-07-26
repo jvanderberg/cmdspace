@@ -33,6 +33,7 @@ enum Preferences {
     private static let webSearchEngineKey = "webSearchEngine"
     private static let preferUserDirectoriesInRecentKey = "preferUserDirectoriesInRecent"
     private static let preferApplicationsInSearchKey = "preferApplicationsInSearch"
+    private static let popupOpacityKey = "popupOpacity"
 
     static var refreshInterval: TimeInterval {
         get {
@@ -88,6 +89,18 @@ enum Preferences {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: preferApplicationsInSearchKey)
+        }
+    }
+
+    static var popupOpacity: Double {
+        get {
+            guard UserDefaults.standard.object(forKey: popupOpacityKey) != nil else {
+                return 1
+            }
+            return min(max(UserDefaults.standard.double(forKey: popupOpacityKey), 0), 1)
+        }
+        set {
+            UserDefaults.standard.set(min(max(newValue, 0), 1), forKey: popupOpacityKey)
         }
     }
 }

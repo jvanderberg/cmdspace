@@ -22,7 +22,7 @@ open it, and drag CmdSpace to Applications.
 CmdSpace requires macOS 13 or newer. The first index may take a few minutes.
 Existing results remain searchable while later refreshes run.
 
-## New in 0.1.2
+## Major Features
 
 ### Live indexing
 
@@ -63,6 +63,18 @@ storage, angle, energy, power, pressure, and frequency. Ambiguous ounces use
 the destination dimension, so `20 ounces in milliliters` means fluid ounces
 while `20 ounces in grams` means weight ounces.
 
+Common unit pairs complete inline. For example, `20F` suggests Celsius and
+calculates immediately. Press Tab to accept the suggested text. Time units
+include milliseconds, microseconds with `us`, `µs`, or `μs`, and nanoseconds.
+
+Programmer literals using `0b`, `0o`, or `0x` show binary, octal, decimal, and
+hexadecimal forms. Binary suffix notation such as `1111b` is also supported.
+Type-ahead suggests a common target, and suffixes such as `in hex`, `in binary`,
+`in octal`, or `in decimal` choose the value copied with Return.
+
+The Search field supports the standard macOS editing shortcuts for copy, paste,
+cut, select all, undo, and redo.
+
 English date phrases support relative dates, date differences, and weekdays.
 Business days mean Monday through Friday and do not include holiday calendars.
 
@@ -71,6 +83,9 @@ Business days mean Monday through Friday and do not include holiday calendars.
 July 25 + 6 weeks
 days until Christmas
 business days between August 1 and September 15
+1 ms to us
+0xF2Ea
+0b010101010 in hex
 ```
 
 ## What it does

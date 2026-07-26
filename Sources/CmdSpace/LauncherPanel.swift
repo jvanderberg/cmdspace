@@ -1,5 +1,6 @@
 import AppKit
 import QuickLookUI
+import UniformTypeIdentifiers
 
 private enum LauncherMode: Int {
     case search
@@ -16,9 +17,12 @@ final class LauncherPanelController: NSWindowController,
     NSMenuDelegate,
     @preconcurrency QLPreviewPanelDataSource
 {
+    private static let browseResultLimit = 1_000
+
     private let database: SearchDatabase
     private let searchFieldBackdrop = NSSearchField()
     private let searchField = NSTextField()
+    private let unitCompletionLabel = NSTextField(labelWithString: "")
     private let clearButton = NSButton()
     private let settingsButton = NSButton()
     private let modeControl = NSSegmentedControl(
@@ -27,6 +31,8 @@ final class LauncherPanelController: NSWindowController,
         target: nil,
         action: nil
     )
+    private let backgroundView = ThemeBackgroundView()
+    private let glassTintView = GlassTintView()
     private let tableView = ResultsTableView()
     private let scrollView = NSScrollView()
     private let statusLabel = NSTextField(labelWithString: "Preparing index…")
@@ -72,9 +78,15 @@ final class LauncherPanelController: NSWindowController,
                 self.hide()
                 return nil
             }
-            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let modifiers = event.modifierFlags.intersection([
+                .command, .shift, .option, .control
+            ])
             if event.keyCode == 49, modifiers.isEmpty, self.hasNavigatedResults {
                 self.toggleQuickLook()
+                return nil
+            }
+            if let key = event.charactersIgnoringModifiers?.lowercased(),
+               self.handleSearchFieldShortcut(key: key, modifiers: modifiers) {
                 return nil
             }
             if modifiers == .command,
@@ -105,9 +117,43 @@ final class LauncherPanelController: NSWindowController,
         }
     }
 
+    private func handleSearchFieldShortcut(
+        key: String,
+        modifiers: NSEvent.ModifierFlags
+    ) -> Bool {
+        guard window?.isKeyWindow == true,
+              let editor = window?.fieldEditor(false, for: searchField) as? NSTextView,
+              window?.firstResponder === editor else {
+            return false
+        }
+
+        if modifiers == .command {
+            switch key {
+            case "c":
+                editor.copy(nil)
+            case "v":
+                editor.paste(nil)
+            case "x":
+                editor.cut(nil)
+            case "a":
+                editor.selectAll(nil)
+            case "z":
+                editor.undoManager?.undo()
+            default:
+                return false
+            }
+            return true
+        }
+        if modifiers == [.command, .shift], key == "z" {
+            editor.undoManager?.redo()
+            return true
+        }
+        return false
+    }
+
     func toggle() {
         guard let window else { return }
-        if window.isVisible {
+        if window.isVisible, window.isKeyWindow, NSApp.isActive {
             hide()
         } else {
             show()
@@ -130,8 +176,10 @@ final class LauncherPanelController: NSWindowController,
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(searchField)
         searchField.selectText(nil)
+        applyAppearancePreferences()
         updateClearButtonVisibility()
-        performSearch()
+        updateUnitConversionCompletion()
+        performSearch(debounce: false)
     }
 
     func hide() {
@@ -142,7 +190,7 @@ final class LauncherPanelController: NSWindowController,
     func update(progress: IndexProgress) {
         statusLabel.stringValue = progress.message
         if progress.phase == .complete {
-            performSearch()
+            performSearch(debounce: false)
         }
     }
 
@@ -150,6 +198,7 @@ final class LauncherPanelController: NSWindowController,
         hasNavigatedResults = false
         closeQuickLook()
         updateClearButtonVisibility()
+        updateUnitConversionCompletion()
         performSearch()
     }
 
@@ -164,6 +213,8 @@ final class LauncherPanelController: NSWindowController,
         case #selector(NSResponder.insertNewline(_:)):
             openSelection()
             return true
+        case #selector(NSResponder.insertTab(_:)):
+            return acceptUnitConversionCompletion(in: textView)
         case #selector(NSResponder.cancelOperation(_:)):
             hide()
             return true
@@ -228,18 +279,24 @@ final class LauncherPanelController: NSWindowController,
     private func buildUI(in panel: NSPanel) {
         guard let content = panel.contentView else { return }
 
-        let background = ThemeBackgroundView()
-        background.material = .popover
-        background.blendingMode = .behindWindow
-        background.state = .active
-        background.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(background)
+        backgroundView.material = .popover
+        backgroundView.blendingMode = .behindWindow
+        backgroundView.state = .active
+        backgroundView.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(backgroundView)
+        glassTintView.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(glassTintView)
         NSLayoutConstraint.activate([
-            background.topAnchor.constraint(equalTo: content.topAnchor),
-            background.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            background.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            background.bottomAnchor.constraint(equalTo: content.bottomAnchor)
+            backgroundView.topAnchor.constraint(equalTo: content.topAnchor),
+            backgroundView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            backgroundView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            backgroundView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            glassTintView.topAnchor.constraint(equalTo: content.topAnchor),
+            glassTintView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            glassTintView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            glassTintView.bottomAnchor.constraint(equalTo: content.bottomAnchor)
         ])
+        applyAppearancePreferences()
 
         (searchFieldBackdrop.cell as? NSSearchFieldCell)?.searchButtonCell = nil
         (searchFieldBackdrop.cell as? NSSearchFieldCell)?.cancelButtonCell = nil
@@ -258,6 +315,11 @@ final class LauncherPanelController: NSWindowController,
         searchField.drawsBackground = false
         searchField.focusRingType = .none
         searchField.delegate = self
+
+        unitCompletionLabel.font = searchField.font
+        unitCompletionLabel.lineBreakMode = .byClipping
+        unitCompletionLabel.maximumNumberOfLines = 1
+        unitCompletionLabel.setAccessibilityElement(false)
 
         clearButton.image = NSImage(
             systemSymbolName: "xmark.circle.fill",
@@ -337,7 +399,7 @@ final class LauncherPanelController: NSWindowController,
         hint.alignment = .right
 
         [
-            searchFieldBackdrop, searchField, clearButton,
+            searchFieldBackdrop, unitCompletionLabel, searchField, clearButton,
             settingsButton, modeControl, scrollView, statusLabel, hint
         ].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
@@ -379,6 +441,10 @@ final class LauncherPanelController: NSWindowController,
                 constant: 1
             ),
 
+            unitCompletionLabel.leadingAnchor.constraint(equalTo: searchField.leadingAnchor),
+            unitCompletionLabel.trailingAnchor.constraint(equalTo: searchField.trailingAnchor),
+            unitCompletionLabel.centerYAnchor.constraint(equalTo: searchField.centerYAnchor),
+
             clearButton.trailingAnchor.constraint(
                 equalTo: searchFieldBackdrop.trailingAnchor,
                 constant: -7
@@ -404,39 +470,50 @@ final class LauncherPanelController: NSWindowController,
         ])
     }
 
-    private func performSearch() {
+    private func performSearch(debounce: Bool = true) {
         searchTask?.cancel()
         let query = searchField.stringValue
+        let calculatorQuery = Calculator.queryCompletion(
+            for: query
+        )?.completedQuery ?? query
         searchTask = Task { [weak self, database] in
-            try? await Task.sleep(for: .milliseconds(35))
+            if debounce {
+                try? await Task.sleep(for: .milliseconds(35))
+            }
             guard !Task.isCancelled else { return }
             let matches: [SearchResult]
-            switch self?.mode ?? .search {
-            case .search:
-                var localMatches = (try? await database.search(
-                    query: query,
-                    preferApplications: Preferences.preferApplicationsInSearch
-                )) ?? []
-                if let calculation = Calculator.evaluate(query) {
-                    localMatches.insert(Self.calculatorSearchResult(calculation), at: 0)
-                } else if BuiltInSearchCommands.matchesHelp(query) {
-                    localMatches.insert(Self.helpSearchResult(), at: 0)
-                }
-                matches = localMatches
-            case .large:
-                matches = (try? await database.browseLargeFiles(filter: query)) ?? []
-            case .recent:
-                matches = (try? await database.browseRecentFiles(
-                    filter: query,
-                    preferUserDirectories: Preferences.preferUserDirectoriesInRecent
-                )) ?? []
-            case .web:
-                let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmedQuery.isEmpty {
-                    matches = []
-                } else {
-                    let webResults = await WebSearchService.results(for: trimmedQuery)
-                    matches = [Self.webSearchResult(for: trimmedQuery)] + webResults
+            if let calculation = Calculator.evaluate(calculatorQuery) {
+                matches = [Self.calculatorSearchResult(calculation)]
+            } else {
+                switch self?.mode ?? .search {
+                case .search:
+                    var localMatches = (try? await database.search(
+                        query: query,
+                        preferApplications: Preferences.preferApplicationsInSearch
+                    )) ?? []
+                    if BuiltInSearchCommands.matchesHelp(query) {
+                        localMatches.insert(Self.helpSearchResult(), at: 0)
+                    }
+                    matches = localMatches
+                case .large:
+                    matches = (try? await database.browseLargeFiles(
+                        filter: query,
+                        limit: Self.browseResultLimit
+                    )) ?? []
+                case .recent:
+                    matches = (try? await database.browseRecentFiles(
+                        filter: query,
+                        preferUserDirectories: Preferences.preferUserDirectoriesInRecent,
+                        limit: Self.browseResultLimit
+                    )) ?? []
+                case .web:
+                    let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmedQuery.isEmpty {
+                        matches = []
+                    } else {
+                        let webResults = await WebSearchService.results(for: trimmedQuery)
+                        matches = [Self.webSearchResult(for: trimmedQuery)] + webResults
+                    }
                 }
             }
             guard !Task.isCancelled, let self else { return }
@@ -478,13 +555,14 @@ final class LauncherPanelController: NSWindowController,
     private static func calculatorSearchResult(_ calculation: CalculatorResult) -> SearchResult {
         SearchResult(
             path: calculation.value,
-            name: calculation.value,
+            name: calculation.displayValue ?? calculation.value,
             kind: .calculator,
             launchCount: 0,
             lastLaunched: nil,
             modifiedAt: nil,
             fileSize: nil,
-            score: .greatestFiniteMagnitude
+            score: .greatestFiniteMagnitude,
+            detail: calculation.detail
         )
     }
 
@@ -492,12 +570,52 @@ final class LauncherPanelController: NSWindowController,
         searchField.stringValue = ""
         hasNavigatedResults = false
         updateClearButtonVisibility()
+        updateUnitConversionCompletion()
         window?.makeFirstResponder(searchField)
-        performSearch()
+        performSearch(debounce: false)
     }
 
     private func updateClearButtonVisibility() {
         clearButton.isHidden = searchField.stringValue.isEmpty
+    }
+
+    private func updateUnitConversionCompletion() {
+        let query = searchField.stringValue
+        guard let suggestion = Calculator.queryCompletion(for: query) else {
+            unitCompletionLabel.stringValue = ""
+            return
+        }
+
+        let text = NSMutableAttributedString(
+            string: query + suggestion.suffix,
+            attributes: [
+                .font: searchField.font ?? NSFont.systemFont(ofSize: 18),
+                .foregroundColor: NSColor.tertiaryLabelColor
+            ]
+        )
+        text.addAttribute(
+            .foregroundColor,
+            value: NSColor.clear,
+            range: NSRange(location: 0, length: (query as NSString).length)
+        )
+        unitCompletionLabel.attributedStringValue = text
+    }
+
+    private func acceptUnitConversionCompletion(in textView: NSTextView) -> Bool {
+        guard let suggestion = Calculator.queryCompletion(
+            for: searchField.stringValue
+        ) else {
+            return false
+        }
+        searchField.stringValue = suggestion.completedQuery
+        textView.string = suggestion.completedQuery
+        textView.setSelectedRange(
+            NSRange(location: (suggestion.completedQuery as NSString).length, length: 0)
+        )
+        updateClearButtonVisibility()
+        updateUnitConversionCompletion()
+        performSearch(debounce: false)
+        return true
     }
 
     @objc private func modeChanged() {
@@ -519,7 +637,7 @@ final class LauncherPanelController: NSWindowController,
         case .web:
             searchField.placeholderString = "Search the web"
         }
-        performSearch()
+        performSearch(debounce: false)
     }
 
     @objc private func showSettings() {
@@ -530,14 +648,14 @@ final class LauncherPanelController: NSWindowController,
             }
             controller.onPreferencesChanged = { [weak self] in
                 self?.onPreferencesChanged?()
-                self?.performSearch()
+                self?.applyAppearancePreferences()
+                self?.performSearch(debounce: false)
             }
             controller.onHelpRequested = { [weak self] in
                 self?.showHelpWindow()
             }
             settingsController = controller
         }
-        hide()
         settingsController?.show()
     }
 
@@ -775,7 +893,7 @@ final class LauncherPanelController: NSWindowController,
             Task {
                 try? await database.remove(paths: [path])
                 await MainActor.run {
-                    self?.performSearch()
+                    self?.performSearch(debounce: false)
                 }
             }
         }
@@ -820,11 +938,8 @@ final class LauncherPanelController: NSWindowController,
             return
         }
         if selectedResult?.kind == .webResult {
-            guard let path = selectedResult?.path, let url = URL(string: path) else { return }
-            NSWorkspace.shared.open(url)
-            hide()
-            searchField.stringValue = ""
-            updateClearButtonVisibility()
+            guard let path = selectedResult?.path else { return }
+            openWebResult(path)
             return
         }
         if selectedResult?.kind == .calculator {
@@ -842,6 +957,26 @@ final class LauncherPanelController: NSWindowController,
         let result = results[row]
         openFileResult(result)
     }
+
+    private func openWebResult(_ address: String) {
+        guard let url = URL(string: address),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https" || scheme == "http" else {
+            NSSound.beep()
+            return
+        }
+        NSWorkspace.shared.open(url)
+        hide()
+        searchField.stringValue = ""
+        updateClearButtonVisibility()
+    }
+
+    private func applyAppearancePreferences() {
+        backgroundView.alphaValue = 1
+        glassTintView.strength = Preferences.popupOpacity
+        window?.contentView?.needsDisplay = true
+        window?.invalidateShadow()
+    }
 }
 
 private final class ResultsTableView: NSTableView {
@@ -856,10 +991,17 @@ private final class ResultsTableView: NSTableView {
 }
 
 private final class ResultCellView: NSTableCellView {
+    private static let iconCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 512
+        return cache
+    }()
+
     private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let pathLabel = NSTextField(labelWithString: "")
     private let kindLabel = NSTextField(labelWithString: "")
+    private var kindLabelWidthConstraint: NSLayoutConstraint!
     private var faviconTask: Task<Void, Never>?
     private var representedPath = ""
 
@@ -882,6 +1024,7 @@ private final class ResultCellView: NSTableCellView {
             addSubview($0)
         }
 
+        kindLabelWidthConstraint = kindLabel.widthAnchor.constraint(equalToConstant: 120)
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -898,7 +1041,7 @@ private final class ResultCellView: NSTableCellView {
 
             kindLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
             kindLabel.firstBaselineAnchor.constraint(equalTo: titleLabel.firstBaselineAnchor),
-            kindLabel.widthAnchor.constraint(equalToConstant: 120)
+            kindLabelWidthConstraint
         ])
     }
 
@@ -909,33 +1052,40 @@ private final class ResultCellView: NSTableCellView {
     func configure(with result: SearchResult, mode: LauncherMode) {
         faviconTask?.cancel()
         representedPath = result.path
-        iconView.image = NSWorkspace.shared.icon(forFile: result.path)
+        iconView.image = nil
+        kindLabel.isHidden = false
+        kindLabelWidthConstraint.constant = 120
         titleLabel.stringValue = result.name
         pathLabel.stringValue = result.path
+        if result.kind == .calculator {
+            iconView.image = NSImage(
+                systemSymbolName: "function",
+                accessibilityDescription: "Calculator"
+            )
+            pathLabel.stringValue = result.detail ?? "Press Return to copy"
+            kindLabel.stringValue = "Copy"
+            return
+        }
+        if result.kind == .help {
+            iconView.image = NSImage(
+                systemSymbolName: "questionmark.circle.fill",
+                accessibilityDescription: "CmdSpace Help"
+            )
+            pathLabel.stringValue = "Open the CmdSpace guide"
+            kindLabel.stringValue = result.kind.label
+            return
+        }
         switch mode {
         case .search:
-            if result.kind == .calculator {
-                iconView.image = NSImage(
-                    systemSymbolName: "function",
-                    accessibilityDescription: "Calculator"
-                )
-                pathLabel.stringValue = "Press Return to copy"
-                kindLabel.stringValue = "Copy"
-            } else if result.kind == .help {
-                iconView.image = NSImage(
-                    systemSymbolName: "questionmark.circle.fill",
-                    accessibilityDescription: "CmdSpace Help"
-                )
-                pathLabel.stringValue = "Open the CmdSpace guide"
-                kindLabel.stringValue = result.kind.label
-            } else {
-                kindLabel.stringValue = result.kind.label
-            }
+            iconView.image = Self.cachedIcon(for: result)
+            kindLabel.stringValue = result.kind.label
         case .large:
+            iconView.image = Self.cachedFileIcon(for: result.path)
             kindLabel.stringValue = result.fileSize.map {
                 ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)
             } ?? "—"
         case .recent:
+            iconView.image = Self.cachedFileIcon(for: result.path)
             kindLabel.stringValue = result.modifiedAt?.formatted(
                 date: .abbreviated,
                 time: .shortened
@@ -953,7 +1103,9 @@ private final class ResultCellView: NSTableCellView {
                 let hostname = pageURL?.host ?? result.path
                 iconView.image = Self.monogramIcon(for: hostname)
                 pathLabel.stringValue = hostname
-                kindLabel.stringValue = "Web"
+                kindLabel.stringValue = ""
+                kindLabel.isHidden = true
+                kindLabelWidthConstraint.constant = 0
                 if let pageURL {
                     faviconTask = Task { @MainActor [weak self] in
                         guard let image = await WebsiteIconLoader.shared.icon(for: pageURL),
@@ -966,6 +1118,31 @@ private final class ResultCellView: NSTableCellView {
                 }
             }
         }
+    }
+
+    private static func cachedIcon(for result: SearchResult) -> NSImage {
+        if result.kind == .file {
+            return cachedFileIcon(for: result.path)
+        }
+        let key = "path.\(result.path)" as NSString
+        if let image = iconCache.object(forKey: key) {
+            return image
+        }
+        let image = NSWorkspace.shared.icon(forFile: result.path)
+        iconCache.setObject(image, forKey: key)
+        return image
+    }
+
+    private static func cachedFileIcon(for path: String) -> NSImage {
+        let pathExtension = (path as NSString).pathExtension.lowercased()
+        let key = "type.\(pathExtension)" as NSString
+        if let image = iconCache.object(forKey: key) {
+            return image
+        }
+        let contentType = UTType(filenameExtension: pathExtension) ?? .data
+        let image = NSWorkspace.shared.icon(for: contentType)
+        iconCache.setObject(image, forKey: key)
+        return image
     }
 
     private static func monogramIcon(for hostname: String) -> NSImage {
@@ -1009,6 +1186,47 @@ private final class ThemeBackgroundView: NSVisualEffectView {
         needsDisplay = true
         window?.invalidateShadow()
         superview?.needsDisplay = true
+    }
+}
+
+private final class GlassTintView: NSView {
+    var strength: Double = 1 {
+        didSet {
+            updateTint()
+        }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        updateTint()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateTint()
+    }
+
+    private func updateTint() {
+        let normalizedTint = min(max(strength, 0), 1)
+        let isDark = effectiveAppearance.bestMatch(
+            from: [.darkAqua, .aqua]
+        ) == .darkAqua
+        let tintColor = isDark
+            ? NSColor(calibratedWhite: 0.14, alpha: 1)
+            : NSColor.white
+        let tintAlpha = pow(normalizedTint, 2.2)
+        layer?.backgroundColor = tintColor.withAlphaComponent(
+            tintAlpha
+        ).cgColor
     }
 }
 

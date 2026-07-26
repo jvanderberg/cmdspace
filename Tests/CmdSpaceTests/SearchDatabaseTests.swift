@@ -146,9 +146,13 @@ final class SearchDatabaseTests: XCTestCase {
 
         let large = try await database.browseLargeFiles(filter: "")
         XCTAssertEqual(large.map(\.name), ["older-large.mov", "newer-small.txt"])
+        let filteredLarge = try await database.browseLargeFiles(filter: "older")
+        XCTAssertEqual(filteredLarge.map(\.name), ["older-large.mov"])
 
         let recent = try await database.browseRecentFiles(filter: "")
         XCTAssertEqual(recent.map(\.name), ["newer-small.txt", "older-large.mov"])
+        let filteredRecent = try await database.browseRecentFiles(filter: "small")
+        XCTAssertEqual(filteredRecent.map(\.name), ["newer-small.txt"])
     }
 
     func testRecentCanPreferCurrentUsersHomeDirectory() async throws {
@@ -252,5 +256,45 @@ final class SearchDatabaseTests: XCTestCase {
         XCTAssertTrue(removedFolder.isEmpty)
         XCTAssertTrue(removedChild.isEmpty)
         XCTAssertEqual(retained.first?.name, "new.txt")
+    }
+
+    func testSearchDoesNotWaitForIndexWriter() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let database = try SearchDatabase(url: directory.appendingPathComponent("test.sqlite3"))
+        try await database.beginIndex(generation: 1)
+        try await database.upsert([
+            IndexedItem(
+                path: "/Applications/Terminal.app",
+                name: "Terminal",
+                normalizedName: "terminal",
+                kind: .application,
+                bundleIdentifier: "com.apple.Terminal",
+                modifiedAt: nil,
+                fileSize: nil
+            )
+        ], generation: 1)
+        try await database.finishIndex(generation: 1)
+
+        let signal = AsyncStream<Void>.makeStream()
+        let writer = Task {
+            await database._testOnlyHoldWriter(milliseconds: 1_000) {
+                signal.continuation.yield()
+                signal.continuation.finish()
+            }
+        }
+        for await _ in signal.stream {
+            break
+        }
+
+        let startedAt = Date()
+        let results = try await database.search(query: "terminal")
+        let elapsed = Date().timeIntervalSince(startedAt)
+
+        XCTAssertEqual(results.first?.name, "Terminal")
+        XCTAssertLessThan(elapsed, 0.45)
+        await writer.value
     }
 }

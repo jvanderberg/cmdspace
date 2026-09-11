@@ -36,7 +36,9 @@ final class FrequentAppsGridTests: XCTestCase {
             XCTAssertEqual(buttons.count, expected)
             XCTAssertEqual(buttons.map(\.title), (0..<count).reversed().prefix(18).map { String(format: "An Application With A Very Long Name %02d", $0) })
             for (index, button) in buttons.enumerated() {
-                XCTAssertEqual(button.frame.width, buttons[0].frame.width, accuracy: 0.5)
+                // AppKit rounds fractional tile widths to the display's pixel grid.
+                XCTAssertEqual(button.frame.width, buttons[0].frame.width,
+                               accuracy: 1 / controller.window!.backingScaleFactor)
                 let frame = button.convert(button.bounds, to: grid)
                 let column = buttons[index % 6].convert(buttons[index % 6].bounds, to: grid)
                 XCTAssertEqual(frame.minX, column.minX, accuracy: 0.5)

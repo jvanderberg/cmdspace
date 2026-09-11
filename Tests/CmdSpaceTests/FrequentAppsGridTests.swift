@@ -23,11 +23,14 @@ final class FrequentAppsGridTests: XCTestCase {
             let views = descendants(controller.window!.contentView!)
             let grid = try XCTUnwrap(views.compactMap { $0 as? NSStackView }.first { $0.accessibilityLabel() == "Frequently used apps" })
             let field = try XCTUnwrap(views.compactMap { $0 as? NSTextField }.first { $0.placeholderString == "Search apps, files, folders, and settings" })
-            try await Task.sleep(nanoseconds: 150_000_000)
             let expected = min(count, 18)
+            let table = try XCTUnwrap(views.compactMap { $0 as? NSTableView }.first)
+            for _ in 0..<300 {
+                if table.enclosingScrollView!.isHidden && grid.arrangedSubviews.count == (expected + 5) / 6 { break }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
             XCTAssertEqual(grid.isHidden, count == 0)
             XCTAssertEqual(grid.arrangedSubviews.count, (expected + 5) / 6)
-            let table = try XCTUnwrap(views.compactMap { $0 as? NSTableView }.first)
             XCTAssertTrue(table.enclosingScrollView!.isHidden)
             XCTAssertEqual(table.numberOfRows, 0)
             controller.window!.contentView!.layoutSubtreeIfNeeded()
@@ -59,7 +62,10 @@ final class FrequentAppsGridTests: XCTestCase {
             XCTAssertFalse(table.enclosingScrollView!.isHidden)
             field.stringValue = ""
             controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
-            try await Task.sleep(nanoseconds: 150_000_000)
+            for _ in 0..<300 {
+                if table.enclosingScrollView!.isHidden && grid.arrangedSubviews.count == (expected + 5) / 6 { break }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
             XCTAssertEqual(grid.isHidden, count == 0)
             XCTAssertEqual(grid.arrangedSubviews.count, (expected + 5) / 6)
         }

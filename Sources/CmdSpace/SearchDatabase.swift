@@ -236,12 +236,14 @@ actor SearchDatabase {
         query rawQuery: String,
         includeFilesAndFolders: Bool = true,
         preferApplications: Bool = true,
+        hideInternalAppComponents: Bool = true,
         limit: Int = 30
     ) async throws -> [SearchResult] {
         try await reader.search(
             query: rawQuery,
             includeFilesAndFolders: includeFilesAndFolders,
             preferApplications: preferApplications,
+            hideInternalAppComponents: hideInternalAppComponents,
             limit: limit
         )
     }
@@ -251,6 +253,15 @@ actor SearchDatabase {
         limit: Int = 100
     ) async throws -> [SearchResult] {
         try await reader.browseLargeFiles(filter: rawFilter, limit: limit)
+    }
+
+    nonisolated func frequentApplications(
+        hideInternalAppComponents: Bool = true, limit: Int = 6
+    ) async throws -> [SearchResult] {
+        try await reader.search(query: "", includeFilesAndFolders: false,
+                                preferApplications: true,
+                                hideInternalAppComponents: hideInternalAppComponents,
+                                limit: limit, frequentApplicationsOnly: true)
     }
 
     nonisolated func browseRecentFiles(
@@ -502,11 +513,29 @@ private actor SearchDatabaseReader {
         query rawQuery: String,
         includeFilesAndFolders: Bool,
         preferApplications: Bool,
-        limit: Int
+        hideInternalAppComponents: Bool,
+        limit: Int,
+        frequentApplicationsOnly: Bool = false
     ) throws -> [SearchResult] {
+        try Task.checkCancellation()
+        sqlite3_progress_handler(database, 1_000, { _ in
+            Task<Never, Never>.isCancelled ? 1 : 0
+        }, nil)
+        defer { sqlite3_progress_handler(database, 0, nil, nil) }
         let query = SearchDatabase.normalize(
             rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         )
+        let visibleCandidateLimit = query.isEmpty ? 250 : 500
+        // Only applications can be hidden. Reserving one extra slot per indexed
+        // app guarantees enough visible candidates without an unbounded sort.
+        var candidateLimit = visibleCandidateLimit
+        if hideInternalAppComponents {
+            let count = try prepare("SELECT COUNT(*) FROM items WHERE kind = 2")
+            defer { sqlite3_finalize(count) }
+            if sqlite3_step(count) == SQLITE_ROW {
+                candidateLimit += Int(sqlite3_column_int64(count, 0))
+            }
+        }
         let sql: String
         if query.isEmpty {
             sql = """
@@ -515,15 +544,17 @@ private actor SearchDatabaseReader {
                 FROM items i
                 LEFT JOIN usage u ON u.path = i.path
                 WHERE i.kind = 2
-                ORDER BY COALESCE(u.last_launched, 0) DESC,
-                         COALESCE(u.launch_count, 0) DESC, i.name
-                LIMIT 250
+                \(frequentApplicationsOnly ? "AND u.last_launched IS NOT NULL" : "")
+                ORDER BY \(frequentApplicationsOnly
+                    ? "COALESCE(u.launch_count, 0) DESC, COALESCE(u.last_launched, 0) DESC, i.path"
+                    : "COALESCE(u.last_launched, 0) DESC, COALESCE(u.launch_count, 0) DESC, i.name, i.path")
+                LIMIT ?
                 """
         } else {
             let kindFilter = includeFilesAndFolders ? "" : "AND i.kind = 2"
             let applicationOrdering = preferApplications
-                ? "ORDER BY CASE WHEN i.kind = 2 THEN 0 ELSE 1 END"
-                : ""
+                ? "ORDER BY CASE WHEN i.kind = 2 THEN 0 ELSE 1 END, i.path"
+                : "ORDER BY i.path"
             sql = """
                 SELECT i.path, i.name, i.kind, COALESCE(u.launch_count, 0),
                        u.last_launched, i.modified_at, i.file_size
@@ -532,7 +563,7 @@ private actor SearchDatabaseReader {
                 WHERE i.normalized_name LIKE ? ESCAPE '\\'
                 \(kindFilter)
                 \(applicationOrdering)
-                LIMIT 500
+                LIMIT ?
                 """
         }
 
@@ -541,9 +572,11 @@ private actor SearchDatabaseReader {
         if !query.isEmpty {
             bind("%\(escapeLike(query))%", at: 1, to: statement)
         }
+        sqlite3_bind_int64(statement, query.isEmpty ? 1 : 2, Int64(candidateLimit))
 
         var results: [SearchResult] = []
         while sqlite3_step(statement) == SQLITE_ROW {
+            try Task.checkCancellation()
             guard let pathText = sqlite3_column_text(statement, 0),
                   let nameText = sqlite3_column_text(statement, 1) else {
                 continue
@@ -551,6 +584,8 @@ private actor SearchDatabaseReader {
             let path = String(cString: pathText)
             let name = String(cString: nameText)
             let kind = ItemKind(rawValue: Int(sqlite3_column_int(statement, 2))) ?? .file
+            if hideInternalAppComponents, kind == .application,
+               ApplicationVisibility.classify(path: path).isHidden { continue }
             let launchCount = Int(sqlite3_column_int(statement, 3))
             let lastLaunched: Date? = sqlite3_column_type(statement, 4) == SQLITE_NULL
                 ? nil
@@ -576,8 +611,20 @@ private actor SearchDatabaseReader {
                     lastLaunched: lastLaunched
                 )
             ))
+            // Hidden candidates never consume the visible result budget.
+            if results.count >= visibleCandidateLimit { break }
         }
 
+        try Task.checkCancellation()
+        if frequentApplicationsOnly {
+            return Array(results.sorted {
+                if $0.launchCount != $1.launchCount { return $0.launchCount > $1.launchCount }
+                if $0.lastLaunched != $1.lastLaunched {
+                    return ($0.lastLaunched ?? .distantPast) > ($1.lastLaunched ?? .distantPast)
+                }
+                return $0.path < $1.path
+            }.prefix(limit))
+        }
         return results.sorted {
             let lhsIsApplication = $0.kind == .application
             let rhsIsApplication = $1.kind == .application
@@ -586,7 +633,9 @@ private actor SearchDatabaseReader {
             }
             if $0.score != $1.score { return $0.score > $1.score }
             if $0.kind != $1.kind { return $0.kind.rawValue > $1.kind.rawValue }
-            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            let nameOrder = $0.name.localizedStandardCompare($1.name)
+            if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+            return $0.path < $1.path
         }.prefix(limit).map { $0 }
     }
 

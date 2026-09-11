@@ -29,6 +29,13 @@ enum WebSearchEngine: String, CaseIterable {
 }
 
 enum Preferences {
+    static var hideInternalAppComponents: Bool {
+        get {
+            UserDefaults.standard.object(forKey: "hideInternalAppComponents") == nil
+                ? true : UserDefaults.standard.bool(forKey: "hideInternalAppComponents")
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "hideInternalAppComponents") }
+    }
     private static let refreshIntervalKey = "refreshInterval"
     private static let webSearchEngineKey = "webSearchEngine"
     private static let preferUserDirectoriesInRecentKey = "preferUserDirectoriesInRecent"

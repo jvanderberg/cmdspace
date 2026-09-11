@@ -8,6 +8,9 @@ enum ItemKind: Int, Sendable {
     case webResult = 4
     case help = 5
     case calculator = 6
+    case systemSettings = 7
+    case systemCommand = 8
+    case runningApplication = 9
 
     var label: String {
         switch self {
@@ -18,6 +21,9 @@ enum ItemKind: Int, Sendable {
         case .webResult: "Web"
         case .help: "Help"
         case .calculator: "Calculator"
+        case .systemSettings: "Settings"
+        case .systemCommand: "Command"
+        case .runningApplication: "Running App"
         }
     }
 }

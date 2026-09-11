@@ -19,7 +19,10 @@ final class LauncherPanelController: NSWindowController,
 {
     private static let browseResultLimit = 1_000
 
+    private let launchItem: @MainActor (URL) async throws -> Void
     private let database: SearchDatabase
+    private let commandExecutor: @MainActor (SystemCommand) async throws -> Void
+    private let appTerminator: @MainActor (RunningAppSnapshot, Bool) throws -> Void
     private let searchFieldBackdrop = NSSearchField()
     private let searchField = NSTextField()
     private let unitCompletionLabel = NSTextField(labelWithString: "")
@@ -35,9 +38,27 @@ final class LauncherPanelController: NSWindowController,
     private let glassTintView = GlassTintView()
     private let tableView = ResultsTableView()
     private let scrollView = NSScrollView()
+    private let recentAppsRow = NSStackView()
+    private var recentAppsHeight: NSLayoutConstraint!
+    private var recentApps: [SearchResult] = []
+    private var selectedRecentIndex: Int?
+    private let statusRow = NSStackView()
+    private let launchSpinner = NSProgressIndicator()
+    private let launchLabel = NSTextField(labelWithString: "")
+    private var pendingLaunches: [String: String] = [:]
+    private var searchRevision = 0
     private let statusLabel = NSTextField(labelWithString: "Preparing index…")
+    private let hint = NSTextField(
+        labelWithString: "↑↓ Select   space Preview   ⌘K Actions   ↩ Open"
+    )
     private var results: [SearchResult] = []
     private var searchTask: Task<Void, Never>?
+    private var runningAppsTask: Task<Void, Never>?
+    private let runningAppsMonitor = RunningAppsMonitor()
+    private var runningAppOrder = RunningAppOrder()
+    private var runningAppTargets: [String: RunningAppSnapshot] = [:]
+    private var commandInFlight = false
+    private var statusBeforeAppCommands: String?
     private var escapeMonitor: Any?
     private var settingsController: SettingsWindowController?
     private var helpController: HelpWindowController?
@@ -49,8 +70,18 @@ final class LauncherPanelController: NSWindowController,
     var onRefreshRequested: (() -> Void)?
     var onPreferencesChanged: (() -> Void)?
 
-    init(database: SearchDatabase) {
+    init(
+        database: SearchDatabase,
+        launchItem: @escaping @MainActor (URL) async throws -> Void = { url in
+            _ = try await NSWorkspace.shared.open(url, configuration: NSWorkspace.OpenConfiguration())
+        },
+        commandExecutor: @escaping @MainActor (SystemCommand) async throws -> Void = { try await SystemCommandExecutor.execute($0) },
+        appTerminator: @escaping @MainActor (RunningAppSnapshot, Bool) throws -> Void = { try RunningAppsMonitor.terminate($0, force: $1) }
+    ) {
+        self.launchItem = launchItem
         self.database = database
+        self.commandExecutor = commandExecutor
+        self.appTerminator = appTerminator
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 680, height: 440),
             styleMask: [.titled, .fullSizeContentView],
@@ -183,6 +214,9 @@ final class LauncherPanelController: NSWindowController,
     }
 
     func hide() {
+        runningAppOrder = RunningAppOrder()
+        searchRevision += 1
+        runningAppsTask?.cancel()
         closeQuickLook()
         window?.orderOut(nil)
     }
@@ -204,6 +238,12 @@ final class LauncherPanelController: NSWindowController,
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         switch commandSelector {
+        case #selector(NSResponder.moveLeft(_:)), #selector(NSResponder.moveRight(_:)):
+            guard let index = selectedRecentIndex, !recentAppsRow.isHidden else { return false }
+            let offset = commandSelector == #selector(NSResponder.moveLeft(_:)) ? -1 : 1
+            selectedRecentIndex = min(max(index + offset, 0), recentApps.count - 1)
+            updateRecentSelection()
+            return true
         case #selector(NSResponder.moveDown(_:)):
             selectRow(offset: 1)
             return true
@@ -246,6 +286,24 @@ final class LauncherPanelController: NSWindowController,
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
+        if tableView.selectedRow >= 0 {
+            selectedRecentIndex = nil
+            updateRecentSelection()
+        }
+        let selectedKind = results.indices.contains(tableView.selectedRow)
+            ? results[tableView.selectedRow].kind : nil
+        hint.stringValue = selectedKind == .systemSettings
+            ? "↑↓ Select   ↩ Open Settings"
+            : "↑↓ Select   space Preview   ⌘K Actions   ↩ Open"
+        if selectedKind == .systemCommand { hint.stringValue = "↑↓ Select   ↩ Run Command" }
+        if selectedKind == .runningApplication {
+            hint.stringValue = AppCommandQuery.parse(searchField.stringValue)?.force == true
+                ? "↑↓ Select   ↩ Force Quit…" : "↑↓ Select   ↩ Quit"
+        }
+        if selectedKind == .systemSettings {
+            closeQuickLook()
+            return
+        }
         guard let panel = QLPreviewPanel.shared(),
               panel.isVisible,
               panel.dataSource === self,
@@ -307,7 +365,7 @@ final class LauncherPanelController: NSWindowController,
         searchFieldBackdrop.focusRingType = .none
         searchFieldBackdrop.setAccessibilityElement(false)
 
-        searchField.placeholderString = "Search applications, files, and folders"
+        searchField.placeholderString = "Search apps, files, folders, and settings"
         searchField.font = .systemFont(ofSize: 18)
         searchField.isEditable = true
         searchField.isSelectable = true
@@ -386,21 +444,38 @@ final class LauncherPanelController: NSWindowController,
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
+        recentAppsRow.orientation = .vertical
+        recentAppsRow.distribution = .fillEqually
+        recentAppsRow.spacing = 10
+        recentAppsRow.isHidden = true
+        recentAppsRow.setAccessibilityLabel("Frequently used apps")
 
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.font = .systemFont(ofSize: 11)
         statusLabel.lineBreakMode = .byTruncatingTail
 
-        let hint = NSTextField(
-            labelWithString: "↑↓ Select   space Preview   ⌘K Actions   ↩ Open"
-        )
+        launchSpinner.style = .spinning
+        launchSpinner.controlSize = .small
+        launchSpinner.isDisplayedWhenStopped = false
+        launchSpinner.setAccessibilityLabel("Opening app")
+        launchLabel.font = .systemFont(ofSize: 11)
+        launchLabel.textColor = .secondaryLabelColor
+        launchLabel.lineBreakMode = .byTruncatingTail
+        statusRow.orientation = .horizontal
+        statusRow.alignment = .centerY
+        statusRow.spacing = 6
+        [launchSpinner, launchLabel, statusLabel].forEach { statusRow.addArrangedSubview($0) }
+        launchSpinner.widthAnchor.constraint(equalToConstant: 14).isActive = true
+        launchSpinner.heightAnchor.constraint(equalToConstant: 14).isActive = true
+        updateLaunchIndicator()
+
         hint.textColor = .tertiaryLabelColor
         hint.font = .systemFont(ofSize: 11)
         hint.alignment = .right
 
         [
             searchFieldBackdrop, unitCompletionLabel, searchField, clearButton,
-            settingsButton, modeControl, scrollView, statusLabel, hint
+            settingsButton, modeControl, recentAppsRow, scrollView, statusRow, hint
         ].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview($0)
@@ -409,7 +484,13 @@ final class LauncherPanelController: NSWindowController,
         content.addSubview(modeControl, positioned: .above, relativeTo: searchField)
         content.addSubview(clearButton, positioned: .above, relativeTo: modeControl)
 
+        recentAppsHeight = recentAppsRow.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
+            content.widthAnchor.constraint(equalToConstant: 680),
+            recentAppsRow.topAnchor.constraint(equalTo: searchFieldBackdrop.bottomAnchor, constant: 12),
+            recentAppsRow.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            recentAppsRow.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            recentAppsHeight,
             searchFieldBackdrop.topAnchor.constraint(equalTo: content.topAnchor, constant: 22),
             searchFieldBackdrop.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             searchFieldBackdrop.trailingAnchor.constraint(
@@ -454,16 +535,16 @@ final class LauncherPanelController: NSWindowController,
             clearButton.heightAnchor.constraint(equalToConstant: 22),
 
             scrollView.topAnchor.constraint(
-                equalTo: searchFieldBackdrop.bottomAnchor,
-                constant: 12
+                equalTo: recentAppsRow.bottomAnchor,
+                constant: 0
             ),
             scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
             scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-            scrollView.bottomAnchor.constraint(equalTo: statusLabel.topAnchor, constant: -8),
+            scrollView.bottomAnchor.constraint(equalTo: statusRow.topAnchor, constant: -8),
 
-            statusLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            statusLabel.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: hint.leadingAnchor, constant: -12),
+            statusRow.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            statusRow.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
+            statusRow.trailingAnchor.constraint(lessThanOrEqualTo: hint.leadingAnchor, constant: -12),
 
             hint.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             hint.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12)
@@ -471,8 +552,22 @@ final class LauncherPanelController: NSWindowController,
     }
 
     private func performSearch(debounce: Bool = true) {
+        searchRevision += 1
         searchTask?.cancel()
+        runningAppsTask?.cancel()
         let query = searchField.stringValue
+        if mode == .search, let appQuery = AppCommandQuery.parse(query) {
+            startRunningAppSearch(appQuery)
+            return
+        }
+        runningAppOrder = RunningAppOrder()
+        runningAppTargets = [:]
+        if let previous = statusBeforeAppCommands {
+            statusLabel.stringValue = previous
+            statusBeforeAppCommands = nil
+        }
+        let showRecentApps = mode == .search && query.isEmpty
+        if !showRecentApps { displayRecentApps([]) }
         let calculatorQuery = Calculator.queryCompletion(
             for: query
         )?.completedQuery ?? query
@@ -482,18 +577,31 @@ final class LauncherPanelController: NSWindowController,
             }
             guard !Task.isCancelled else { return }
             let matches: [SearchResult]
+            var recent: [SearchResult] = []
             if let calculation = Calculator.evaluate(calculatorQuery) {
                 matches = [Self.calculatorSearchResult(calculation)]
             } else {
                 switch self?.mode ?? .search {
                 case .search:
+                    if showRecentApps {
+                        recent = (try? await database.frequentApplications(
+                            hideInternalAppComponents: Preferences.hideInternalAppComponents, limit: 18
+                        )) ?? []
+                        matches = []
+                        break
+                    }
                     var localMatches = (try? await database.search(
                         query: query,
-                        preferApplications: Preferences.preferApplicationsInSearch
+                        preferApplications: Preferences.preferApplicationsInSearch,
+                        hideInternalAppComponents: Preferences.hideInternalAppComponents
                     )) ?? []
                     if BuiltInSearchCommands.matchesHelp(query) {
                         localMatches.insert(Self.helpSearchResult(), at: 0)
                     }
+                    localMatches = SystemCommand.results(for: query) + localMatches
+                    localMatches = SystemSettingsSearch.merging(
+                        SystemSettingsSearch.results(for: query), into: localMatches
+                    )
                     matches = localMatches
                 case .large:
                     matches = (try? await database.browseLargeFiles(
@@ -517,12 +625,204 @@ final class LauncherPanelController: NSWindowController,
                 }
             }
             guard !Task.isCancelled, let self else { return }
-            self.results = matches
+            let recentPaths = Set(recent.map(\.path))
+            self.results = matches.filter { !recentPaths.contains($0.path) }
             self.tableView.reloadData()
-            if !matches.isEmpty {
+            if !self.results.isEmpty {
                 self.tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
             }
+            self.displayRecentApps(recent)
         }
+    }
+
+    private func startRunningAppSearch(_ query: AppCommandQuery) {
+        displayRecentApps([])
+        closeQuickLook()
+        if statusBeforeAppCommands == nil { statusBeforeAppCommands = statusLabel.stringValue }
+        results = []
+        runningAppTargets = [:]
+        tableView.reloadData()
+        statusLabel.stringValue = "Measuring app CPU usage…"
+        hint.stringValue = query.force ? "↑↓ Select   ↩ Force Quit…" : "↑↓ Select   ↩ Quit"
+        runningAppsTask = Task { [weak self, runningAppsMonitor] in
+            while !Task.isCancelled {
+                do {
+                    let apps = RunningAppsMonitor.applications()
+                    let usage = try await runningAppsMonitor.sample(apps: apps)
+                    guard !Task.isCancelled else { return }
+                    if let self, !self.commandInFlight {
+                        let selected = self.results.indices.contains(self.tableView.selectedRow)
+                            ? self.results[self.tableView.selectedRow].path : nil
+                        let ordered = self.runningAppOrder.update(usage)
+                        let filtered = ordered.filter { entry in
+                            query.filter.split(whereSeparator: \.isWhitespace).allSatisfy { word in
+                                entry.app.name.localizedCaseInsensitiveContains(String(word))
+                            }
+                        }
+                        self.runningAppTargets = Dictionary(uniqueKeysWithValues: filtered.map { ($0.app.identity, $0.app) })
+                        self.results = filtered.map { $0.result(force: query.force) }
+                        self.tableView.reloadData()
+                        if !self.results.isEmpty {
+                            let row = selected.flatMap { key in self.results.firstIndex { $0.path == key } } ?? 0
+                            self.tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                        }
+                        self.statusLabel.stringValue = filtered.isEmpty
+                            ? "No matching running apps"
+                            : "CPU usage · includes known helpers · 100% equals one core"
+                        self.hint.stringValue = query.force ? "↑↓ Select   ↩ Force Quit…" : "↑↓ Select   ↩ Quit"
+                    }
+                    try await Task.sleep(for: .seconds(1))
+                } catch is CancellationError { return }
+                catch {
+                    guard !Task.isCancelled else { return }
+                    self?.statusLabel.stringValue = "Could not read app CPU usage"
+                    return
+                }
+            }
+        }
+    }
+
+    private func confirmCommand(title: String, message: String, action: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        // Return/Escape cancel by default. Destructive approval requires choosing
+        // the explicitly named action, not repeating Return from the result row.
+        let cancel = alert.addButton(withTitle: "Cancel")
+        let proceed = alert.addButton(withTitle: action)
+        alert.layout()
+        proceed.keyEquivalent = ""
+        cancel.keyEquivalent = "\r"
+        alert.window.defaultButtonCell = cancel.cell as? NSButtonCell
+        alert.window.initialFirstResponder = cancel
+        return alert.runModal() == .alertSecondButtonReturn
+    }
+
+    private func showCommandError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "The command could not be completed"
+        alert.informativeText = error.localizedDescription.replacingOccurrences(of: ":", with: " —")
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func runSystemCommand(_ command: SystemCommand) {
+        if command == .quitApps || command == .forceQuitApps {
+            searchField.stringValue = command == .quitApps ? "quit " : "kill "
+            updateClearButtonVisibility()
+            window?.makeFirstResponder(searchField)
+            performSearch(debounce: false)
+            return
+        }
+        guard !commandInFlight else { return }
+        commandInFlight = true
+        if let message = command.confirmation,
+           !confirmCommand(title: command.title, message: message, action: command.title) {
+            commandInFlight = false
+            return
+        }
+        let previousStatus = statusLabel.stringValue
+        Task { [weak self] in
+            defer {
+                self?.commandInFlight = false
+                self?.statusLabel.stringValue = previousStatus
+            }
+            do {
+                guard let self else { return }
+                self.statusLabel.stringValue = "Running \(command.title)…"
+                try await self.commandExecutor(command)
+                self.hide()
+                self.searchField.stringValue = ""
+                self.updateClearButtonVisibility()
+            } catch { self?.showCommandError(error) }
+        }
+    }
+
+    private func quitRunningApp(_ snapshot: RunningAppSnapshot, force: Bool) {
+        guard !commandInFlight else { return }
+        commandInFlight = true
+        defer { commandInFlight = false }
+        if force && !confirmCommand(title: "Force quit \(snapshot.name)?",
+                                    message: "Unsaved changes in this app may be lost.", action: "Force Quit") {
+            return
+        }
+        do {
+            try appTerminator(snapshot, force)
+            statusLabel.stringValue = "\(force ? "Force quit" : "Quit") requested for \(snapshot.name)"
+        } catch { showCommandError(error) }
+    }
+
+    private func displayRecentApps(_ apps: [SearchResult]) {
+        recentApps = apps
+        selectedRecentIndex = apps.isEmpty ? nil : 0
+        for view in recentAppsRow.arrangedSubviews {
+            recentAppsRow.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        let gridOnly = mode == .search && searchField.stringValue.isEmpty
+        scrollView.isHidden = gridOnly
+        recentAppsRow.isHidden = apps.isEmpty
+        let rowCount = (apps.count + 5) / 6
+        recentAppsHeight.constant = apps.isEmpty ? 0 : CGFloat(rowCount * 92 + 2)
+        if let window {
+            var frame = window.frame
+            let height = gridOnly ? CGFloat(150 + max(1, rowCount) * 92) : 440
+            frame.origin.y += frame.height - height
+            frame.size.height = height
+            frame.origin.x += (frame.width - 680) / 2
+            frame.size.width = 680
+            if let screen = window.screen { frame.origin.y = max(frame.origin.y, screen.visibleFrame.minY) }
+            window.setFrame(frame, display: true)
+        }
+        var row: NSStackView!
+        for (index, app) in apps.enumerated() {
+            if index % 6 == 0 {
+                row = NSStackView()
+                row.orientation = .horizontal
+                row.distribution = .fillEqually
+                row.spacing = 10
+                recentAppsRow.addArrangedSubview(row)
+                row.widthAnchor.constraint(equalTo: recentAppsRow.widthAnchor).isActive = true
+            }
+            let button = AppTileButton(title: app.name, target: self, action: #selector(openRecentApp(_:)))
+            button.tag = index
+            button.isBordered = false
+            let icon = NSWorkspace.shared.icon(forFile: app.path).copy() as! NSImage
+            icon.size = NSSize(width: 40, height: 40)
+            button.configure(icon: icon)
+            button.toolTip = app.name
+            button.setAccessibilityLabel(app.name)
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 8
+            row.addArrangedSubview(button)
+            button.widthAnchor.constraint(equalTo: recentAppsRow.widthAnchor, multiplier: 1.0 / 6.0, constant: -50.0 / 6.0).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 82).isActive = true
+        }
+        // Fill the final row with empty slots to preserve tile widths.
+        if !apps.isEmpty {
+            if apps.count % 6 != 0 {
+                for _ in (apps.count % 6)..<6 { row.addArrangedSubview(NSView()) }
+            }
+            tableView.deselectAll(nil)
+        }
+        updateRecentSelection()
+    }
+
+    private func updateRecentSelection() {
+        for case let button as NSButton in recentAppsRow.arrangedSubviews.flatMap({ ($0 as? NSStackView)?.arrangedSubviews ?? [] }) {
+            button.layer?.backgroundColor = (button.tag == selectedRecentIndex
+                ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.25)
+                : NSColor.clear).cgColor
+        }
+        hint.stringValue = selectedRecentIndex != nil
+            ? "←→↑↓ Select   ↩ Open"
+            : (scrollView.isHidden ? "Type to search" : "↑↓ Select   space Preview   ⌘K Actions   ↩ Open")
+    }
+
+    @objc private func openRecentApp(_ sender: NSButton) {
+        guard recentApps.indices.contains(sender.tag) else { return }
+        openFileResult(recentApps[sender.tag])
     }
 
     private static func webSearchResult(for query: String) -> SearchResult {
@@ -629,7 +929,7 @@ final class LauncherPanelController: NSWindowController,
         modeControl.selectedSegment = newMode.rawValue
         switch newMode {
         case .search:
-            searchField.placeholderString = "Search applications, files, and folders"
+            searchField.placeholderString = "Search apps, files, folders, and settings"
         case .large:
             searchField.placeholderString = "Filter large files"
         case .recent:
@@ -672,6 +972,29 @@ final class LauncherPanelController: NSWindowController,
     }
 
     private func selectRow(offset: Int) {
+        if let index = selectedRecentIndex {
+            if offset < 0 {
+                selectedRecentIndex = index >= 6 ? index - 6 : index
+                updateRecentSelection()
+                return
+            }
+            if index / 6 < (recentApps.count - 1) / 6 {
+                selectedRecentIndex = min(index + 6, recentApps.count - 1)
+                updateRecentSelection()
+                return
+            }
+            guard !scrollView.isHidden, !results.isEmpty else { return }
+            selectedRecentIndex = nil
+            updateRecentSelection()
+            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+            return
+        }
+        if offset < 0, tableView.selectedRow <= 0, !recentAppsRow.isHidden {
+            selectedRecentIndex = ((recentApps.count - 1) / 6) * 6
+            tableView.deselectAll(nil)
+            updateRecentSelection()
+            return
+        }
         guard !results.isEmpty else { return }
         hasNavigatedResults = true
         let current = tableView.selectedRow < 0 ? 0 : tableView.selectedRow
@@ -846,12 +1169,12 @@ final class LauncherPanelController: NSWindowController,
               ) else {
             return
         }
+        hide()
         NSWorkspace.shared.open(
             [URL(fileURLWithPath: actionTarget.path)],
             withApplicationAt: terminalURL,
             configuration: NSWorkspace.OpenConfiguration()
         )
-        hide()
     }
 
     @objc private func openActionTargetWithApplication(_ sender: NSMenuItem) {
@@ -860,12 +1183,12 @@ final class LauncherPanelController: NSWindowController,
             return
         }
         let fileURL = URL(fileURLWithPath: actionTarget.path)
+        hide()
         NSWorkspace.shared.open(
             [fileURL],
             withApplicationAt: applicationURL,
             configuration: NSWorkspace.OpenConfiguration()
         )
-        hide()
         Task { [database] in
             try? await database.recordLaunch(path: actionTarget.path)
         }
@@ -907,20 +1230,88 @@ final class LauncherPanelController: NSWindowController,
         alert.runModal()
     }
 
-    private func openFileResult(_ result: SearchResult) {
-        NSWorkspace.shared.open(URL(fileURLWithPath: result.path))
-        Task { [database] in
-            try? await database.recordLaunch(path: result.path)
-        }
+    private func dismissForLaunch() {
         hide()
         searchField.stringValue = ""
         updateClearButtonVisibility()
     }
 
+    private func updateLaunchIndicator() {
+        let active = !pendingLaunches.isEmpty
+        launchSpinner.isHidden = !active
+        launchLabel.isHidden = !active
+        statusLabel.isHidden = active
+        if active {
+            launchLabel.stringValue = pendingLaunches.count == 1
+                ? "Opening \(pendingLaunches.values.first!)…" : "Opening \(pendingLaunches.count) items…"
+            launchSpinner.startAnimation(nil)
+        } else {
+            launchSpinner.stopAnimation(nil)
+        }
+    }
+
+    private func openURLs(_ urls: [URL], recording result: SearchResult? = nil, name: String? = nil) {
+        guard let first = urls.first else { return }
+        let key = first.absoluteString
+        guard pendingLaunches[key] == nil else { return }
+        let revision = searchRevision
+        pendingLaunches[key] = result?.name ?? name ?? "browser"
+        updateLaunchIndicator()
+        // Independent of searchTask so typing or dismissing never cancels a launch.
+        Task { [weak self, launchItem, database] in
+            var opened = false
+            for url in urls {
+                do {
+                    try await launchItem(url)
+                    opened = true
+                    if let result { try? await database.recordLaunch(path: result.path) }
+                    break
+                } catch {
+                    // Settings links may need to fall back to their parent pane.
+                    continue
+                }
+            }
+            guard let self else { return }
+            self.pendingLaunches.removeValue(forKey: key)
+            self.updateLaunchIndicator()
+            if opened {
+                if self.searchRevision == revision && self.pendingLaunches.isEmpty {
+                    self.dismissForLaunch()
+                }
+            } else {
+                self.statusLabel.stringValue = "Could not open the item. Try again."
+                NSSound.beep()
+            }
+        }
+    }
+
+    private func openFileResult(_ result: SearchResult) {
+        openURLs([URL(fileURLWithPath: result.path)], recording: result)
+    }
+
     private func openSelection() {
+        guard !commandInFlight else { return }
+        if let index = selectedRecentIndex, recentApps.indices.contains(index), !recentAppsRow.isHidden {
+            openFileResult(recentApps[index])
+            return
+        }
         let selectedResult = results.indices.contains(tableView.selectedRow)
             ? results[tableView.selectedRow]
             : nil
+        if let selectedResult, let command = SystemCommand.from(selectedResult) {
+            runSystemCommand(command)
+            return
+        }
+        if let selectedResult, selectedResult.kind == .runningApplication {
+            guard let target = runningAppTargets[selectedResult.path],
+                  let query = AppCommandQuery.parse(searchField.stringValue) else { return }
+            quitRunningApp(target, force: query.force)
+            return
+        }
+        if let selectedResult, selectedResult.kind == .systemSettings {
+            openURLs(SystemSettingsSearch.openingURLs(for: selectedResult.path), name: selectedResult.name)
+            return
+        }
         if selectedResult?.kind == .help {
             searchField.stringValue = ""
             updateClearButtonVisibility()
@@ -931,10 +1322,7 @@ final class LauncherPanelController: NSWindowController,
             let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !query.isEmpty,
                   let url = Preferences.webSearchEngine.searchURL(for: query) else { return }
-            NSWorkspace.shared.open(url)
-            hide()
-            searchField.stringValue = ""
-            updateClearButtonVisibility()
+            openURLs([url])
             return
         }
         if selectedResult?.kind == .webResult {
@@ -965,10 +1353,7 @@ final class LauncherPanelController: NSWindowController,
             NSSound.beep()
             return
         }
-        NSWorkspace.shared.open(url)
-        hide()
-        searchField.stringValue = ""
-        updateClearButtonVisibility()
+        openURLs([url])
     }
 
     private func applyAppearancePreferences() {
@@ -976,6 +1361,42 @@ final class LauncherPanelController: NSWindowController,
         glassTintView.strength = Preferences.popupOpacity
         window?.contentView?.needsDisplay = true
         window?.invalidateShadow()
+    }
+}
+
+// Explicit icon and label frames keep every tile aligned regardless of the
+// app icon's aspect ratio or the title's intrinsic width.
+private final class AppTileButton: NSButton {
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 82) }
+
+    override func draw(_ dirtyRect: NSRect) {}
+
+    func configure(icon: NSImage) {
+        let iconView = NSImageView()
+        iconView.image = icon
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 11, weight: .medium)
+        label.alignment = .center
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        for view in [iconView, label] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            iconView.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            iconView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 40),
+            iconView.heightAnchor.constraint(equalToConstant: 40),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 54),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 3),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -3)
+        ])
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
     }
 }
 
@@ -1057,6 +1478,34 @@ private final class ResultCellView: NSTableCellView {
         kindLabelWidthConstraint.constant = 120
         titleLabel.stringValue = result.name
         pathLabel.stringValue = result.path
+        if let command = SystemCommand.from(result) {
+            iconView.image = NSImage(systemSymbolName: command.symbol, accessibilityDescription: command.title)
+            pathLabel.stringValue = command.detail
+            kindLabel.stringValue = "Command"
+            return
+        }
+        if result.kind == .runningApplication {
+            if let pidText = URL(string: result.path)?.host, let pid = Int32(pidText) {
+                iconView.image = NSRunningApplication(processIdentifier: pid)?.icon
+            }
+            pathLabel.stringValue = result.detail ?? "Running app"
+            kindLabel.stringValue = "\(String(format: "%.1f", result.score))% CPU"
+            return
+        }
+        if result.kind == .systemSettings {
+            if result.name == "Lock Screen" { titleLabel.stringValue = "Lock Screen Settings" }
+            let destination = SystemSettingsSearch.destinations.first {
+                $0.address == result.path && $0.name == result.name
+            }
+            iconView.image = (result.name == "Bluetooth" ? NSImage(named: NSImage.bluetoothTemplateName) : nil)
+                ?? NSImage(
+                    systemSymbolName: destination?.symbolName ?? "gearshape.fill",
+                    accessibilityDescription: result.name
+                )
+            pathLabel.stringValue = result.detail ?? "Open System Settings"
+            kindLabel.stringValue = result.kind.label
+            return
+        }
         if result.kind == .calculator {
             iconView.image = NSImage(
                 systemSymbolName: "function",

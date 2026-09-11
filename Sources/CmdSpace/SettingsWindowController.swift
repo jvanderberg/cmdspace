@@ -9,6 +9,9 @@ final class SettingsWindowController: NSWindowController {
 
     var onRefreshRequested: (() -> Void)?
     var onPreferencesChanged: (() -> Void)?
+    private let hideInternalAppsCheckbox = NSButton(
+        checkboxWithTitle: "Hide internal app components", target: nil, action: nil
+    )
     var onHelpRequested: (() -> Void)?
 
     private let refreshPopup = NSPopUpButton()
@@ -151,6 +154,14 @@ final class SettingsWindowController: NSWindowController {
         webTitle.font = .systemFont(ofSize: 15, weight: .semibold)
         preferApplicationsCheckbox.target = self
         preferApplicationsCheckbox.action = #selector(preferApplicationsChanged)
+        hideInternalAppsCheckbox.target = self
+        hideInternalAppsCheckbox.action = #selector(hideInternalAppsChanged)
+        let internalAppsDescription = NSTextField(wrappingLabelWithString:
+            "Hide embedded helpers, managed placeholders, and incomplete app bundles from Search. "
+            + "Changes apply immediately without reindexing."
+        )
+        internalAppsDescription.textColor = .secondaryLabelColor
+        internalAppsDescription.font = .systemFont(ofSize: 11)
         let webLabel = NSTextField(labelWithString: "Open external searches with")
         webSearchPopup.addItems(withTitles: WebSearchEngine.allCases.map(\.title))
         webSearchPopup.target = self
@@ -238,6 +249,8 @@ final class SettingsWindowController: NSWindowController {
             views: [
                 webTitle,
                 preferApplicationsCheckbox,
+                hideInternalAppsCheckbox,
+                internalAppsDescription,
                 webRow,
                 webDescription,
                 separator(),
@@ -318,6 +331,7 @@ final class SettingsWindowController: NSWindowController {
             ? .on
             : .off
         preferApplicationsCheckbox.state = Preferences.preferApplicationsInSearch ? .on : .off
+        hideInternalAppsCheckbox.state = Preferences.hideInternalAppComponents ? .on : .off
         webSearchPopup.selectItem(
             at: WebSearchEngine.allCases.firstIndex(of: Preferences.webSearchEngine) ?? 0
         )
@@ -346,6 +360,11 @@ final class SettingsWindowController: NSWindowController {
 
     @objc private func preferApplicationsChanged() {
         Preferences.preferApplicationsInSearch = preferApplicationsCheckbox.state == .on
+        onPreferencesChanged?()
+    }
+
+    @objc private func hideInternalAppsChanged() {
+        Preferences.hideInternalAppComponents = hideInternalAppsCheckbox.state == .on
         onPreferencesChanged?()
     }
 

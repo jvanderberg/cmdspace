@@ -51,20 +51,62 @@ final class HelpWindowController: NSWindowController {
                 bodyLabel(
                     "Press ⌘Space anywhere, start typing, choose a result with ↑ or ↓, "
                     + "then press Return. Press Space after choosing a file to preview it. "
-                    + "Press Escape to close without opening anything."
+                    + "Press Escape to close without opening anything. Use the gear button "
+                    + "for Settings or search for help to open this window."
+                ),
+                bodyLabel(
+                    "Search stays responsive while an app opens. A spinner and Opening message "
+                    + "appear while macOS handles the request. The launcher closes on success "
+                    + "unless you have started another search. The app may continue loading "
+                    + "after the launcher closes."
                 ),
                 makeShortcutStrip()
             ]
         )
         let majorFeatures = makeCard(
-            title: "Major Features",
+            title: "Features",
             symbol: "sparkles.rectangle.stack",
             views: [
+                titledDetail(
+                    "System commands and running apps",
+                    "Search for Lock Screen, Sleep, Mute, Unmute, Volume Up, Volume Down, "
+                    + "Quit CmdSpace, Restart, Shut Down, or Empty Trash. Type quit or kill "
+                    + "to see running apps by CPU usage, then type an app name to filter. "
+                    + "The initial CPU order stays fixed while you filter and CPU values refresh. "
+                    + "Apps that exit disappear; newly opened apps append at the bottom. Reopen "
+                    + "the list for a fresh CPU sort. Usage includes known helpers. Return requests "
+                    + "a normal quit for quit, or confirms force quit for kill. Restart, shutdown, "
+                    + "and emptying Trash also require confirmation, with Cancel selected by default. "
+                    + "Empty Trash permanently deletes its contents. Lock Screen requires "
+                    + "Accessibility access; some other commands may request Automation access."
+                ),
+                divider(),
+                titledDetail(
+                    "Frequently used apps",
+                    "When Search is empty, up to 18 apps most frequently opened through CmdSpace "
+                    + "appear first, with recent launches breaking ties. They "
+                    + "appear in up to three rows of six, with icons above their names. "
+                    + "Incomplete rows align to the left. Click an app or use the arrow keys, "
+                    + "then Return. Empty Search shows only the app grid. The grid disappears when you type "
+                    + "and returns when you clear Search."
+                ),
+                divider(),
+                titledDetail(
+                    "System Settings search",
+                    "Find common Mac settings with words such as wifi, dark mode, resolution, "
+                    + "startup apps, or full disk access. Matching settings appear above apps "
+                    + "and files, with distinct icons and a breadcrumb, "
+                    + "and Return opens the page. Common privacy permissions have their own "
+                    + "results. Some destinations open the containing page. "
+                    + "Setting names match from two characters; partial matches on related words "
+                    + "require at least three. Settings search works offline without the file index."
+                ),
+                divider(),
                 titledDetail(
                     "Live indexing",
                     "File changes update results while CmdSpace runs. Changes made while "
                     + "CmdSpace was closed replay after relaunch. Full reconciliation "
-                    + "defaults to Manual only, remains available on optional schedules, "
+                    + "defaults to Manual only, supports optional schedules, "
                     + "and runs automatically if macOS reports an event-history gap."
                 ),
                 divider(),
@@ -100,7 +142,8 @@ final class HelpWindowController: NSWindowController {
                     symbol: "magnifyingglass",
                     title: "Search",
                     shortcut: "⌘1",
-                    detail: "Applications, filenames, and folders. Ranking learns from what you launch."
+                    detail: "Applications, filenames, folders, and System Settings. "
+                        + "App and file ranking learns from what you launch."
                 ),
                 divider(),
                 titledDetail(
@@ -113,7 +156,7 @@ final class HelpWindowController: NSWindowController {
                     + "Try 30 days from today, days until Christmas, or "
                     + "business days between August 1 and September 15. "
                     + "Business days count Monday through Friday without holidays. "
-                    + "Date phrases currently use English input. "
+                    + "Date phrases use English input. "
                     + "Press Return to copy the answer."
                 ),
                 divider(),
@@ -154,9 +197,12 @@ final class HelpWindowController: NSWindowController {
             views: [
                 titledDetail(
                     "Ranking",
-                    "Exact and prefix matches rank highest. “Prefer apps in Search results” "
-                    + "keeps applications above files and folders. CmdSpace privately uses "
-                    + "launch frequency and recency to improve future ordering."
+                    "Matching settings appear first. Apps and files use exact and prefix matches, "
+                    + "launch frequency, and recency for ranking. “Prefer apps in Search results” "
+                    + "keeps applications above files and folders. “Hide internal app components” "
+                    + "hides embedded helpers, managed placeholders, incomplete bundles, and "
+                    + "background components under Application Support. Turn it off in Settings "
+                    + "to show these indexed entries without reindexing."
                 ),
                 divider(),
                 titledDetail(
@@ -193,11 +239,6 @@ final class HelpWindowController: NSWindowController {
                     "Local by design",
                     "Your index and launch history stay on this Mac at\n"
                     + "~/Library/Application Support/CmdSpace/index.sqlite3"
-                ),
-                titledDetail(
-                    "Development install",
-                    "CmdSpace lives at /Applications/CmdSpace.app. To update from source, run\n"
-                    + "./scripts/install-app.sh"
                 )
             ]
         )

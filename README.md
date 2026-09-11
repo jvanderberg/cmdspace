@@ -8,7 +8,7 @@
   Fast, local-first search for your Mac
 </p>
 
-CmdSpace is a small native macOS launcher intended to replace Spotlight on
+CmdSpace is a native macOS launcher for
 <kbd>⌘</kbd><kbd>Space</kbd>. It builds its own filename index of the startup
 drive, follows filesystem changes as they happen, and learns from items opened
 through CmdSpace.
@@ -22,18 +22,102 @@ open it, and drag CmdSpace to Applications.
 CmdSpace requires macOS 13 or newer. The first index may take a few minutes.
 Existing results remain searchable while later refreshes run.
 
-## Major Features
+## Using CmdSpace
+
+Press <kbd>⌘</kbd><kbd>Space</kbd>, type a query, choose a result with the arrow
+keys, and press Return. Escape closes the launcher. Open Settings with the
+gear button and Help by searching for `help`.
+
+Search stays responsive while an app opens. A spinner and “Opening [name]…”
+appear while macOS handles the request. The launcher closes when macOS reports
+success, unless you have started another search. An app may continue loading
+after the launcher closes.
+
+Use the mode buttons or keyboard shortcuts to choose what to search.
+
+| Mode | Shortcut | Contents |
+| --- | --- | --- |
+| Search | ⌘1 | Apps, files, folders, settings, commands, and calculations |
+| Large Files | ⌘2 | Up to 1,000 indexed files, largest first |
+| Recent Files | ⌘3 | Up to 1,000 recently modified files |
+| Web | ⌘4 | Live web results and a full search with your chosen provider |
+
+Type to filter Large Files and Recent Files by name. Recent Files can prioritize
+common personal folders through Settings.
+
+## Features
+
+### System commands and running apps
+
+Search for Lock Screen, Sleep, Mute, Unmute, Volume Up, Volume Down,
+Quit CmdSpace, Restart, Shut Down, or Empty Trash. Commands have distinct
+icons and a Command label. Matching System Settings results appear first.
+
+Type `quit` or `kill` to list running apps by CPU usage, highest first.
+Continue with an app name, such as `quit chrome`, to filter the list.
+The initial order uses CPU usage and stays fixed while the list is open,
+including when you filter by name. CPU values refresh about once per second.
+Apps that exit disappear, and newly opened apps append at the bottom. Reopen
+the list for a fresh CPU sort. Usage includes associated helper processes;
+100% means one CPU core.
+
+Return with `quit` requests a normal quit, allowing the app to prompt about
+unsaved work. Return with `kill` asks for confirmation before force quit.
+Restart, Shut Down, and Empty Trash also require confirmation, with Cancel
+selected by default. Empty Trash permanently deletes its contents.
+
+Lock Screen uses the macOS lock shortcut and requires Accessibility access
+for CmdSpace. macOS may ask for Automation access when you first use commands
+that control System Events or Finder. Failed commands show an error.
+
+### Frequently used apps
+
+Open Search with an empty query to see up to 18 apps most frequently opened
+through CmdSpace, in up to three rows of six, with icons above their names. Recent launches break ties.
+Only apps launched through CmdSpace appear; incomplete rows align to the left.
+Click an app or use the arrow keys followed by Return to open it.
+Empty Search shows only the app grid. Type to see search results. The grid disappears as soon as
+you type and returns when you clear Search. Internal-app filtering applies.
+
+### Hide internal app components
+
+Search hides embedded helpers, managed placeholders, incomplete app bundles,
+and background-only components under Application Support by default.
+Turn off **Hide internal app components** in Settings → Search and Browse to
+show these indexed entries immediately without reindexing.
+
+Visibility follows deterministic rules based on paths and app metadata.
+Apps with unreadable metadata stay visible. Launch history affects ranking.
+
+### System Settings search
+
+Find common Mac settings directly in Search. Try `wifi`, `dark mode`,
+`resolution`, `startup apps`, `microphone access`, or `full disk access`.
+Results show a destination-specific icon and breadcrumb. Press Return to open the page.
+
+The built-in catalog covers Wi-Fi, Bluetooth, battery or desktop power,
+appearance, displays, wallpaper, keyboard, trackpad, printers, privacy and
+security, sound, mouse, notifications, Focus, Lock Screen, Login Items,
+Software Update, Storage, and Accessibility. Common privacy permissions have
+their own results. Setting names match from two characters. Partial matches
+on related words require at least three characters.
+
+Settings search works offline without waiting for the file index. Matching
+settings always appear above apps and files, with at most six settings results per
+query. Settings results open pages without changing any settings. Some
+destinations open the containing page, including Firewall under Network and
+FileVault under Privacy & Security on macOS 13. Hardware-specific pages such
+as Mouse depend on the devices connected to your Mac.
 
 ### Live indexing
 
-CmdSpace now follows filesystem changes continuously while it is running.
+CmdSpace follows filesystem changes continuously while it is running.
 Created and renamed folders have their contents indexed, removed folders are
 deleted from results, and changes made while CmdSpace was closed replay from
 the macOS event journal after relaunch.
 
-The initial full-drive index remains available for reconciliation. It defaults
-to **Manual only** because live updates normally keep the index current.
-Optional 6-hour, 12-hour, daily, and weekly schedules remain available.
+Full-drive refresh defaults to **Manual only**. Settings also offers 6-hour,
+12-hour, daily, and weekly refresh schedules.
 CmdSpace also reconciles automatically if macOS reports an event-history gap.
 
 ### Quick Look and file actions
@@ -88,38 +172,21 @@ business days between August 1 and September 15
 0b010101010 in hex
 ```
 
-## What it does
+## Index and ranking
 
-- Indexes application names, file names, and folder names (not file contents).
-- Tracks filesystem changes live and replays changes made while CmdSpace was
-  not running.
-- Opens from a fast keyboard-first floating launcher.
-- Previews selected files with Quick Look after navigating with the arrow keys.
-- Provides contextual actions for revealing, copying paths, choosing an app,
-  and moving items to Trash.
-- Browses largest files and most recently modified files via the mode switch
-  or ⌘1/⌘2/⌘3, and searches the web with ⌘4.
-- Ranks exact and prefix matches first, then boosts items by launch frequency
-  and recency.
-- Keeps apps first by default, with a setting to use normal relevance instead.
-- Calculates expressions, converts common units, and handles English date
-  phrases such as `30 days from today` directly in Search.
-- Shows live web results and opens full searches with your chosen provider.
-- Stores the index and launch history locally in
-  `~/Library/Application Support/CmdSpace/index.sqlite3`.
-- Tolerates unreadable folders and reports progress in the launcher.
-- Includes in-app Settings for refresh timing, ranking, launch at login,
-  permissions, and manual refresh, plus a complete Help window.
+CmdSpace indexes app, file, and folder names, paths, modification dates, and
+file sizes. It does not search document contents or use Spotlight’s index.
+The index and launch history stay on your Mac at
+`~/Library/Application Support/CmdSpace/index.sqlite3`.
 
-CmdSpace scans the sealed System and writable Data APFS volumes separately,
-then maps Data-volume paths back to their familiar `/Users` and `/Applications`
-spellings. It skips caches, cloud-provider roots, automount triggers, container
-data, VCS internals, dependency trees, temporary volumes, and other high-noise
-locations. It does not use or modify Spotlight's index.
+Matching settings lead Search results. App and file ranking uses exact and
+prefix matches, launch frequency, and recency. **Prefer apps in Search results**
+places apps above files and folders and can be disabled in Settings.
 
-Live filesystem updates keep the index current. Full reconciliation is
-available manually or on an optional schedule and runs automatically when
-macOS reports an event-history gap.
+CmdSpace scans the startup drive’s System and Data volumes and displays familiar
+paths such as `/Users` and `/Applications`. It skips caches, cloud-provider
+roots, container data, dependency trees, temporary volumes, and other locations
+that would fill results with internal files. Unreadable folders are skipped.
 
 ## Build and run
 
@@ -143,8 +210,9 @@ chmod +x scripts/install-app.sh
 ./scripts/install-app.sh
 ```
 
-This Developer ID-signs CmdSpace, installs it at `/Applications/CmdSpace.app`,
-verifies the installed signature, and relaunches that copy.
+This builds and signs CmdSpace, installs it at `/Applications/CmdSpace.app`,
+verifies the installed signature, and launches that copy. A Developer ID
+Application certificate is needed for a stable signing identity across builds.
 
 ## Claim ⌘Space
 

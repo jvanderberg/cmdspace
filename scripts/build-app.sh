@@ -47,8 +47,9 @@ if [[ -n "$identity" && "$identity" != "-" ]]; then
         timestamp_args+=(--timestamp)
     fi
     codesign --force --deep --options runtime "${timestamp_args[@]}" \
+        --entitlements "$repo_dir/Resources/CmdSpace.entitlements" \
         --sign "$identity" "$app_dir"
 else
-    codesign --force --deep --sign - "$app_dir"
+    codesign --force --deep --entitlements "$repo_dir/Resources/CmdSpace.entitlements" --sign - "$app_dir"
 fi
 echo "$app_dir"

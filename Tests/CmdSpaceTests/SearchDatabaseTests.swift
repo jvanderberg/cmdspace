@@ -3,6 +3,51 @@ import XCTest
 @testable import CmdSpace
 
 final class SearchDatabaseTests: XCTestCase {
+    func testFrequentApplicationsUseFrequencyThenRecencyAndRespectVisibility() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try SearchDatabase(url: directory.appendingPathComponent("test.sqlite3"))
+        let names = ["Frequent", "Recent", "Never", "Parent.app/Helper", "Document"]
+        let paths = names.map { directory.appendingPathComponent($0 + ".app").path }
+        try await database.upsert(zip(names, paths).map { name, path in
+            IndexedItem(path: path, name: name, normalizedName: name.lowercased(),
+                        kind: name == "Document" ? .file : .application,
+                        bundleIdentifier: nil, modifiedAt: nil, fileSize: nil)
+        }, generation: 1)
+        for _ in 0..<10 { try await database.recordLaunch(path: paths[0]) }
+        try await database.recordLaunch(path: paths[1])
+        try await database.recordLaunch(path: paths[3])
+        try await database.recordLaunch(path: paths[4])
+        let recent = try await database.frequentApplications()
+        XCTAssertEqual(recent.map(\.name), ["Frequent", "Recent"])
+        let all = try await database.frequentApplications(hideInternalAppComponents: false)
+        XCTAssertEqual(all.map(\.name), ["Frequent", "Parent.app/Helper", "Recent"])
+        let limited = try await database.frequentApplications(limit: 1)
+        XCTAssertEqual(limited.map(\.name), ["Frequent"])
+    }
+
+    func testCanceledSearchDoesNotReturnResultsOrAffectNextSearch() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try SearchDatabase(url: directory.appendingPathComponent("test.sqlite3"))
+        try await database.upsert([
+            IndexedItem(path: "/Applications/Example.app", name: "Example", normalizedName: "example",
+                        kind: .application, bundleIdentifier: nil, modifiedAt: nil, fileSize: nil)
+        ], generation: 1)
+        let canceled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await database.search(query: "example")
+        }
+        do {
+            _ = try await canceled.value
+            XCTFail("Superseded searches must not produce results")
+        } catch is CancellationError {
+            // Expected, including when cancellation happens before the reader runs.
+        }
+        let next = try await database.search(query: "example")
+        XCTAssertEqual(next.map(\.name), ["Example"])
+    }
+
     func testIndexSearchAndLaunchHistory() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
